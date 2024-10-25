@@ -27,6 +27,23 @@ def register_localizer(
     contrasts: List[str],
     conjunction_type: str,
 ):
+    """
+    Register a localizer for subjects.
+
+    Parameters
+    ----------
+    subjects : List[str]
+        List of subject IDs.
+    localizer_name : str
+        Localizer name.
+    task : str
+        Task label.
+    contrasts : List[str]
+        List of contrast names.
+    conjunction_type : str
+        The conjunction type.
+        Options are 'min', 'max', 'sum', 'prod', 'and', or 'or'.
+    """
     for subject in subjects:
         os.makedirs(get_subject_localizer_folder(subject), exist_ok=True)
         localizer_info_path = get_localizer_info_path(subject, task)
@@ -182,8 +199,9 @@ def threshold_p_map(
     froi_mask = np.zeros_like(data)
 
     if threshold_type == "n":
-        topN_idx = np.argsort(data, axis=0)[:threshold_value]
-        np.put_along_axis(froi_mask, topN_idx, 1, axis=0)
+        pvals_sorted = np.sort(data, axis=0)
+        threshold = pvals_sorted[threshold_value - 1]
+        froi_mask[data <= threshold] = 1
 
     # All-tie-inclusive thresholding
     elif "percent" in threshold_type:

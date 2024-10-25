@@ -47,6 +47,22 @@ def run_first_level(
     confound_labels: Optional[List[str]] = [],
     **args,
 ):
+    """
+    Run first level analysis on BIDS preprocessed data.
+
+    Parameters
+    ----------
+    subjects : list of str
+        List of subject labels.
+    tasks : list of str
+        List of task labels.
+    space : str
+        Space of the images.
+    confound_labels : list of str, optional
+        List of confound labels to include in the design matrix.
+    **args
+        Additional arguments to pass to make_first_level_design_matrix.
+    """
     os.makedirs(get_bids_deriv_folder(), exist_ok=True)
     dofs = {}
     for task in tasks:
@@ -218,6 +234,21 @@ def register_contrast_and_create_maps(
     contrast_name: str,
     contrast_def: Union[List[float], str],
 ):
+    """
+    Register a contrast and create maps for all runs.
+
+    Parameters
+    ----------
+    subject : str
+        Subject label.
+    task : str
+        Task label.
+    contrast_name : str
+        Contrast name.
+    contrast_def : list of float or str
+        Contrast definition. If str, it should be a valid expression for the
+        design, e.g. 'A - B'.
+    """
     if isinstance(contrast_def, str):
         design_matrix = get_design_matrix(subject, task, "all")
         contrast_def = expression_to_contrast_vector(

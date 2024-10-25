@@ -16,7 +16,18 @@ from ..contrast import register_contrast
 
 
 def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
-    # Migrate the contrast files from SPM to the BIDS data folder.
+    """
+    Migrate first-level results from SPM to BIDS.
+
+    Parameters
+    ----------
+    spm_dir : str
+        Path to the SPM directory. The directory should contain 'SPM.mat',
+    subject : str
+        Subject label.
+    task : str
+        Task label.
+    """
     os.makedirs(get_subject_model_folder(subject), exist_ok=True)
     os.makedirs(get_subject_contrast_folder(subject), exist_ok=True)
 

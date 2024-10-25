@@ -19,6 +19,20 @@ import numpy as np
 def register_contrast(
     subject: str, task: str, contrast_name: str, contrast_vector: List[float]
 ):
+    """
+    Register a contrast for a subject and task.
+
+    Parameters
+    ----------
+    subject : str
+        Subject ID.
+    task : str
+        Task name.
+    contrast_name : str
+        Contrast name.
+    contrast_vector : List[float]
+        Contrast vector, defining the contrast in terms of the design matrix.
+    """
     contrast_info_path = get_contrast_info_path(subject, task)
     if not os.path.exists(contrast_info_path):
         contrast_info = pd.DataFrame(columns=["contrast", "vector"])
@@ -44,6 +58,18 @@ def register_contrast(
 
 
 def get_contrast_info(subject: str, task: str, contrast: str) -> dict:
+    """
+    Get the contrast information for a subject and task.
+
+    Parameters
+    ----------
+    subject : str
+        Subject ID.
+    task : str
+        Task name.
+    contrast : str
+        Contrast name.
+    """
     contrast_info_path = get_contrast_info_path(subject, task)
     if not os.path.exists(contrast_info_path):
         return None
@@ -189,6 +215,25 @@ def get_contrasts_runs_single_task(
 def create_contrast(
     subject: str, task: str, run_label: str, contrast: str, type: str
 ) -> Nifti1Image:
+    """
+    Create a contrast map for a subject, task, and contrast.
+
+    Parameters
+    ----------
+    subject : str
+        Subject ID.
+    task : str
+        Task name.
+    run_label : str
+        Run label. If 'all', the contrast is computed across all runs. If
+        'orthX', the contrast is computed across all runs except run X.
+    contrast : str
+        Contrast name.
+    type : str
+        Type of the contrast map. Can be 'effect', 'variance', 't', 'z', or
+        'p'.
+    """
+
     contrast_info = get_contrast_info(subject, task, contrast)
     assert (
         contrast_info is not None
