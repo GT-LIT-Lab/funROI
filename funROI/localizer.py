@@ -137,8 +137,8 @@ def get_localizers(
 
     Returns
     -------
-    masks : np.ndarray, shape (n_subjects, n_voxels)
-        The localizer masks.
+    masks : List[np.ndarray]
+        The localizer masks for each subject. Shape (n_runs, n_voxels).
     """
     data = []
     for subject in subjects:
@@ -166,9 +166,8 @@ def get_localizers(
             threshold_type,
             threshold_value,
         )
-        masks_binary = np.mean(masks, axis=0) > 0.5
-        data.append(masks_binary)
-    return np.array(data)
+        data.append(masks)
+    return data
 
 
 def threshold_p_map(

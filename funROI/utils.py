@@ -165,3 +165,7 @@ def get_parcels_labels(parcels: str) -> Tuple[Nifti1Image, dict]:
             if label != 0:
                 label_dict[int(label)] = int(label)
     return parcels_img, label_dict
+
+def harmonic_mean(data):
+    data = np.array(data).flatten()
+    return len(data) / np.sum(1 / data)

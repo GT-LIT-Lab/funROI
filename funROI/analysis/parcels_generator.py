@@ -6,6 +6,7 @@ from ..utils import (
     get_parcels_path,
     get_contrast_path,
     get_parcels_config_path,
+    harmonic_mean
 )
 import glob
 from typing import List, Union, Optional
@@ -43,7 +44,8 @@ class ParcelsGenerator:
         self.parcels_template_img = None
         self.parcels = None
         self.info = []
-        self.data = None
+        self._data = []
+        self._binary_masks = None
 
     def add_subjects(
         self,
@@ -72,10 +74,22 @@ class ParcelsGenerator:
         localizer_maps = get_localizers(
             subjects, task, localizer, threshold_type, threshold_value
         )
-        if self.data is None:
-            self.data = localizer_maps
+
+        self._data.extend(localizer_maps)
+
+        binary_masks = []
+        for subjecti, subject in enumerate(subjects):
+            binary_masks.append(
+                np.mean(localizer_maps[subjecti], axis=0) > 0.5
+            )
+        binary_masks = np.stack(binary_masks, axis=0)
+
+        if self._binary_masks is None:
+            self._binary_masks = binary_masks
         else:
-            self.data = np.vstack((self.data, localizer_maps))
+            self._binary_masks = np.stack(
+                [self._binary_masks, binary_masks], axis=0
+            )
 
         # Might switch to a better solution in the future
         if self.parcels_template_img is None:
@@ -92,31 +106,35 @@ class ParcelsGenerator:
             )
 
     def generate(self) -> Nifti1Image:
-        if self.data is None:
+        if self._data is None:
             raise ValueError("No subjects added for parcellation")
-        overlap_map = np.mean(self.data, axis=0).reshape(
+        overlap_map = np.mean(self._binary_masks, axis=0).reshape(
             self.parcels_template_img.get_fdata().shape
         )
-        if self.use_spm_smooth:
+        if self.use_spm_smooth: # SPM-style smoothing
             smoothed_map = self._smooth_array(
                 overlap_map,
                 self.parcels_template_img.affine,
                 self.smoothing_kernel_size,
             )
-        else:  # use nilearn.image.smooth_img
+        else: # Nilearn-style smoothing
             smoothed_map = smooth_img(
                 Nifti1Image(overlap_map, self.parcels_template_img.affine),
                 fwhm=self.smoothing_kernel_size,
             ).get_fdata()
         smoothed_map[smoothed_map < self.overlap_thr_vox] = np.nan
+
+        self._overlap = overlap_map
+        self._overlap_smooothed = smoothed_map
+
         self.parcels = self._watershed(-smoothed_map)
 
         return Nifti1Image(self.parcels, self.parcels_template_img.affine)
 
     def select(
         self,
-        min_voxel_size: int,
-        overlap_thr_roi: float,
+        min_voxel_size: Optional[int] = 0,
+        overlap_thr_roi: Optional[float] = 0,
         inplace: Optional[bool] = False,
     ) -> Nifti1Image:
         """
@@ -145,21 +163,20 @@ class ParcelsGenerator:
             if parcel_size < min_voxel_size:
                 parcels[parcel_mask] = 0
             else:
-                data_3d = (
-                    self.data.reshape(
-                        self.data.shape[0], *self.parcels_template_img.shape
-                    )
-                    * parcel_mask[np.newaxis, ...]
-                )
-                non_zero_rate = (
-                    np.sum(np.sum(data_3d, axis=(1, 2, 3)) > 0)
-                    / data_3d.shape[0]
-                )
-                if non_zero_rate < overlap_thr_roi:
+                subject_coverage = np.zeros(len(self._data))
+                for subjecti, data in enumerate(self._data):
+                    subject_coverage[subjecti] = harmonic_mean(
+                        np.sum(data[:, parcel_mask.flatten()], axis=1)
+                    ) > 0
+                if np.mean(subject_coverage) < overlap_thr_roi:
                     parcels[parcel_mask] = 0
 
         if inplace:
             self.parcels = parcels
+
+        labels_remaining = np.unique(parcels)
+        labels_remaining = labels_remaining[labels_remaining != 0]
+        print(f"Remaining parcels: {len(labels_remaining)}")
 
         return Nifti1Image(parcels, self.parcels_template_img.affine)
 
