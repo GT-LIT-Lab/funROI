@@ -36,6 +36,21 @@ class Settings:
             )
         return self.bids_data_folder
 
+    def set_analysis_output_folder(self, path):
+        self.analysis_output_folder = path
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    def get_analysis_output_folder(self):
+        if not self.analysis_output_folder:
+            raise ValueError(
+                (
+                    "Analysis output folder not set. "
+                    "Please set it using 'set_analysis_output_folder'."
+                )
+            )
+        return self.analysis_output_folder
+
     def set_bids_preprocessed_folder(self, path):
         self.bids_preprocessed_folder = path
 

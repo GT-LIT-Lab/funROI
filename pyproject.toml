@@ -1,2 +1,14 @@
 [tool.black]
 line-length = 79
+
+[tool.coverage.run]
+source = ["./funROI"]
+branch = true
+omit = ["funROI/tests/*"]
+
+[tool.coverage.html]
+directory = "htmlcov"
+title = "Coverage Report"
+
+[tool.pytest.ini_options]
+addopts = "--cov=./funROI --cov-branch --cov-report=html"

@@ -32,6 +32,14 @@ def get_bids_preprocessed_folder_relative():
     return _settings.get_bids_preprocessed_folder_relative()
 
 
+def set_analysis_output_folder(path):
+    _settings.set_analysis_output_folder(path)
+
+
+def get_analysis_output_folder():
+    return _settings.get_analysis_output_folder()
+
+
 from .first_level import *
 from .analysis import *
 

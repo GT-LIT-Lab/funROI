@@ -1,25 +1,24 @@
 import numpy as np
 from typing import List, Tuple, Optional
-from ..froi import FROI
-from ..contrast import (
-    get_contrasts_all_multi_task,
-    get_contrasts_runs_single_task,
-    flatten_task_contrasts,
+from ..utils import (
+    FROIConfig,
+    get_next_effect_estimation_paths,
+    get_effect_estimation_folder,
 )
-from ..froi import (
-    _get_frois_all_multi_task,
-    _get_frois_orth_single_task,
-    flatten_task_frois_labels,
-)
-from ..utils import get_parcels_labels
+from ..contrast import _get_contrast_all, _get_contrast_run, _check_orthogonal
+from ..froi import _get_froi_all, _get_froi_orth
+from ..parcels import get_parcels
 import pandas as pd
+import warnings
+import json
+import os
 
 
 class FROIEffectEstimator:
     def __init__(
         self,
         subjects: List[str],
-        task_frois: List[Tuple[str, List[FROI]]],
+        froi: FROIConfig,
         fill_na_with_zero: Optional[bool] = True,
     ):
         """
@@ -29,171 +28,132 @@ class FROIEffectEstimator:
         ----------
         subjects : List[str]
             List of subject IDs.
-        task_frois : List[Tuple[str, List[FROI]]]
-            List of (task, frois) tuples.
-        fill_na_with_zero : Optional[bool], default=False
+        froi : FROIConfig
+            The configuration to define the fROIs.
+        fill_na_with_zero : Optional[bool], default=True
             Whether to fill NaN values with zero. If False, NaN values will be
             ignored.
         """
         self.subjects = subjects
-        self.task_frois = task_frois
+        self.froi = froi
         self.fill_na_with_zero = fill_na_with_zero
 
-    def compute_effect_size(
-        self, task_contrasts: List[Tuple[str, List[str]]]
+    def run(
+        self,
+        effects: List[Tuple[str, List[str]]],
+        return_output: Optional[bool] = False,
     ) -> pd.DataFrame:
         """
         Compute the effect size of fROIs.
 
         Parameters
         ----------
-        task_contrasts : List[Tuple[str, List[str]]]
+        effects : List[Tuple[str, List[str]]]
             List of (task, contrasts) tuples.
 
         Returns
         -------
         effect_size : pd.DataFrame,
             columns=[
-                'subject', 'localizer_task', 'localizer_name',
-                'localizer_size', 'froi', 'effect_task',
-                'effect_contrast', 'effect_size'
+                'subject', 'froi_size', 'froi', 'task',
+                'contrast', 'effect_size'
             ]
             The effect size of fROIs.
         """
-        parcels_labels = {}
-        for task, frois in self.task_frois:
-            parcels_labels[task] = {}
-            for froi in frois:
-                _, parcels_labels[task][froi.localizer] = get_parcels_labels(
-                    froi.parcels
-                )
-
-        localizer_tasks_flattened, localizer_names_flattened = (
-            flatten_task_frois_labels(self.task_frois)
-        )
-        effect_tasks_flattened, effect_names_flattened = (
-            flatten_task_contrasts(task_contrasts)
-        )
+        _, parcels_labels = get_parcels(self.froi.parcels)
 
         effect_size_all_subjects = []
         for subject in self.subjects:
-            # All x All
-            froi_mask = _get_frois_all_multi_task(
-                subject,
-                self.task_frois,
-            )
+            try:
+                froi_mask_all = _get_froi_all(subject, self.froi)
+                froi_mask_orth = _get_froi_orth(subject, self.froi)
+            except ValueError:
+                warnings.warn(
+                    f"All- or orthogonal-run fROI not found for subject "
+                    f"{subject} and task {self.froi.task}. Skipping."
+                )
+                continue
 
-            effect_data = get_contrasts_all_multi_task(
-                subject, task_contrasts, "effect"
-            )
-            eff = self._compute_effect_size(
-                effect_data, froi_mask, self.fill_na_with_zero
-            )
-            effect_size_all = pd.DataFrame(
-                {
-                    "localizer_task": eff["localizer_id"].map(
-                        lambda x: localizer_tasks_flattened[x]
-                    ),
-                    "localizer_name": eff["localizer_id"].map(
-                        lambda x: localizer_names_flattened[x]
-                    ),
-                    "localizer_size": eff["localizer_size"],
-                    "effect_task": eff["contrast_id"].map(
-                        lambda x: effect_tasks_flattened[x]
-                    ),
-                    "effect_contrast": eff["contrast_id"].map(
-                        lambda x: effect_names_flattened[x]
-                    ),
-                    "effect_size": eff["effect_size"],
-                }
-            )
-            effect_size_all["froi"] = eff.apply(
-                lambda row: parcels_labels[
-                    localizer_tasks_flattened[int(row["localizer_id"])]
-                ][localizer_names_flattened[int(row["localizer_id"])]][
-                    int(row["froi_id"])
-                ],
-                axis=1,
-            )
+            for task, contrasts in effects:
+                for contrast in contrasts:
+                    if not _check_orthogonal(
+                        subject,
+                        self.froi.task,
+                        self.froi.contrasts,
+                        task,
+                        [contrast],
+                    ):
+                        try:
+                            effect_data = _get_contrast_run(
+                                subject, task, contrast, "effect"
+                            )
+                        except ValueError:
+                            warnings.warn(
+                                f"Contrast {contrast} not found for subject {subject} "
+                                f"and task {task}. Skipping."
+                            )
+                            continue
 
-            # Same-task condition
-            effect_size_same_task = []
-            for localizer_task, frois in self.task_frois:
-                if localizer_task not in effect_tasks_flattened:
-                    continue
-                matched = np.where(
-                    np.array(effect_tasks_flattened) == localizer_task
-                )[0]
-                effect_names_flattened_matched = [
-                    effect_names_flattened[i] for i in matched
-                ]
-                effect_data_same_task = get_contrasts_runs_single_task(
-                    subject,
-                    localizer_task,
-                    effect_names_flattened_matched,
-                    "effect",
-                )
-                froi_mask_same_task = _get_frois_orth_single_task(
-                    subject, localizer_task, frois
-                )
-                eff = self._compute_effect_size(
-                    effect_data_same_task,
-                    froi_mask_same_task,
-                    self.fill_na_with_zero,
-                )
-                effect_size_same_task_i_renamed = pd.DataFrame(
-                    {
-                        "localizer_task": [localizer_task] * len(eff),
-                        "localizer_name": eff["localizer_id"].map(
-                            lambda x: frois[x].localizer
-                        ),
-                        "localizer_size": eff["localizer_size"],
-                        "effect_task": [localizer_task] * len(eff),
-                        "effect_contrast": eff["contrast_id"].map(
-                            lambda x: effect_names_flattened_matched[x]
-                        ),
-                        "effect_size": eff["effect_size"],
-                    }
-                )
-                effect_size_same_task_i_renamed["froi"] = eff.apply(
-                    lambda row: parcels_labels[localizer_task][
-                        frois[int(row["localizer_id"])].localizer
-                    ][int(row["froi_id"])],
-                    axis=1,
-                )
-                effect_size_same_task.append(effect_size_same_task_i_renamed)
-            effect_size_same_task = pd.concat(effect_size_same_task)
+                        froi_mask = froi_mask_orth
 
-            effect_size_all.set_index(
-                [
-                    "localizer_task",
-                    "localizer_name",
-                    "froi",
-                    "effect_task",
-                    "effect_contrast",
-                ],
-                inplace=True,
-            )
-            effect_size_same_task.set_index(
-                [
-                    "localizer_task",
-                    "localizer_name",
-                    "froi",
-                    "effect_task",
-                    "effect_contrast",
-                ],
-                inplace=True,
-            )
-            effect_size_all.update(effect_size_same_task)
-            effect_size_all.reset_index(inplace=True)
-            effect_size_all["subject"] = subject
-            effect_size_all_subjects.append(effect_size_all)
+                    else:
+                        try:
+                            effect_data = _get_contrast_all(
+                                subject, task, contrast, "effect"
+                            )
+                        except ValueError:
+                            warnings.warn(
+                                f"Contrast {contrast} not found for subject {subject} "
+                                f"and task {task}. Skipping."
+                            )
+                            continue
+
+                        froi_mask = froi_mask_all
+
+                    # Trim voxels not labeled
+                    non_zero_voxels = np.sum(froi_mask != 0, axis=0) > 0
+                    froi_mask = froi_mask[:, non_zero_voxels]
+                    effect_data = effect_data[:, non_zero_voxels]
+
+                    eff = self._compute_effect_size(
+                        effect_data[None, :, :],
+                        froi_mask[None, :, :],
+                        self.fill_na_with_zero,
+                    )
+
+                    effect_size = pd.DataFrame(
+                        {
+                            "subject": subject,
+                            "froi_size": eff["localizer_size"],
+                            "froi": eff["froi_id"].map(
+                                lambda x: parcels_labels[x]
+                            ),
+                            "task": task,
+                            "contrast": contrast,
+                            "effect_size": eff["effect_size"],
+                        }
+                    )
+                    effect_size_all_subjects.append(effect_size)
 
         effect_size_all_subjects = pd.concat(effect_size_all_subjects)
-        effect_size_all_subjects = effect_size_all_subjects[
-            ["subject"] + effect_size_all_subjects.columns[:-1].tolist()
-        ]
-        return effect_size_all_subjects
+
+        effect_folder = get_effect_estimation_folder()
+        if not os.path.exists(effect_folder):
+            os.makedirs(effect_folder)
+
+        output_path, config_path = get_next_effect_estimation_paths()
+        effect_size_all_subjects.to_csv(output_path, index=False)
+        config = {
+            "subjects": self.subjects,
+            "froi": self.froi,
+            "effects": effects,
+            "fill_na_with_zero": self.fill_na_with_zero,
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+
+        if return_output:
+            return effect_size_all_subjects
 
     @classmethod
     def _compute_effect_size(

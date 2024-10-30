@@ -1,19 +1,23 @@
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Tuple, Union
-from ..froi import (
-    FROI,
-    _get_frois_all_multi_task,
-    _get_frois_orth_single_task,
-    _get_frois_runs_single_task,
+from typing import Optional, List, Union
+from ..froi import _get_froi_all, _get_froi_orth, _get_froi_run
+from ..parcels import get_parcels
+from ..contrast import _check_orthogonal
+from ..utils import (
+    FROIConfig,
+    ParcelsConfig,
+    get_overlap_estimation_folder,
+    get_next_overlap_estimation_path,
 )
-from ..utils import get_parcels_labels, get_parcels
+import warnings
+import os
 
 
 class OverlapEstimator:
     def __init__(
         self,
-        task_frois: Union[List[Tuple[str, List[FROI]]], List[str]],
+        frois: List[Union[FROIConfig, str, ParcelsConfig]],
         subjects: Optional[List[str]] = None,
         kind: Optional[str] = "overlap",
     ):
@@ -25,10 +29,13 @@ class OverlapEstimator:
 
         Parameters
         ----------
-        task_frois : Union[List[Tuple[str, List[FROI]]], List[str]]
-            List of (task, frois) tuples, or a list of parcels names.
+        frois : List[Union[FROI, str, ParcelsConfig]]
+            The fROIs to analyze. Each fROI can be a FROI object, a saved
+            parcels name, or a ParcelsConfig object indicating the parcels
+            and labels paths.
         subjects : Optional[List[str]]
-            The list of subjects to analyze.
+            The list of subjects to analyze. It is required if any fROI is a
+            FROI object, by default None.
         kind : str, optional
             The kind of overlap to compute. It can be 'dice', or 'overlap', by
             default 'overlap'.
@@ -36,178 +43,166 @@ class OverlapEstimator:
             - 'overlap' : Overlap: |A & B| / min(|A|, |B|)
         """
         self.subjects = subjects
-        self.task_frois = task_frois
+        self.frois = frois
         self.kind = kind
 
-        if np.all([isinstance(task_froi, str) for task_froi in task_frois]):
-            self.subjects = [None]  # dummy subject
+        any_froi = any([isinstance(froi, FROIConfig) for froi in frois])
+        if any_froi:
+            if subjects is None:
+                raise ValueError("subjects must be provided for FROI objects")
+        else:
+            self.subjects = [None]
 
-    def compute_overlap(self) -> pd.DataFrame:
+    def run(self, return_output: Optional[bool] = False) -> pd.DataFrame:
         """
         Compute the overlap between fROIs.
 
         Returns
         -------
         overlap : pd.DataFrame, columns=[
-                'task1', 'task2', 'localizer1',
-                'localizer2', 'froi1', 'froi2', 'overlap'
+                'subject', 'group1', 'group2', 'froi1', 'froi2', 'overlap'
             ]
             The overlap between each pair of fROIs across networks.
         """
         overlap_all_subjects = []
-
-        parcels_labels = {None: {}}
-
-        flattened_localizer_tasks = []
-        flattened_localizer_names = []
-        for i, task_froi in enumerate(self.task_frois):
-            if isinstance(task_froi, str):
-                _, labels = get_parcels_labels(task_froi)
-                parcels_labels[None][task_froi] = labels
-                flattened_localizer_tasks.append(None)
-                flattened_localizer_names.append(task_froi)
-            else:
-                task, frois = task_froi
-                parcels_labels[task] = {}
-                for froi in frois:
-                    _, labels = get_parcels_labels(froi.parcels)
-                    parcels_labels[task][froi.localizer] = labels
-                    flattened_localizer_tasks.append(task)
-                    flattened_localizer_names.append(froi.localizer)
-
         for subject in self.subjects:
-            # All x All
-            frois = []
-            for task_froi_i, task_froi in enumerate(self.task_frois):
-                if isinstance(task_froi, str):
-                    parcels_img = get_parcels(task_froi)
-                    parcels_flattened = parcels_img.get_fdata().flatten()
-                    frois.append(parcels_flattened[np.newaxis, np.newaxis, :])
-                else:
-                    frois.append(
-                        _get_frois_all_multi_task(subject, [task_froi])
+            frois_avail = []
+            frois_data_avail = {"all": [], "orth": [], "run": []}
+            frois_labels_avail = []
+            for froi in self.frois:
+                try:
+                    if isinstance(froi, FROIConfig):
+                        froi_dat = _get_froi_all(subject, froi)
+                        froi_dat_orth = _get_froi_orth(subject, froi)
+                        froi_dat_run = _get_froi_run(subject, froi)
+                        frois_avail.append(froi)
+                        frois_data_avail["all"].append(froi_dat)
+                        frois_data_avail["orth"].append(froi_dat_orth)
+                        frois_data_avail["run"].append(froi_dat_run)
+                        _, parcels_labels = get_parcels(
+                            froi.parcels
+                        )  # TODO: decide whether to backtrack labels from parcels, or save labels with fROI
+                        frois_labels_avail.append(parcels_labels)
+                    else:
+                        parcels_img_all, parcels_labels_all = get_parcels(froi)
+                        frois_avail.append(froi)
+                        frois_data_avail["all"].append(
+                            parcels_img_all.get_fdata().flatten()[None, :]
+                        )
+                        frois_data_avail["orth"].append(None)
+                        frois_data_avail["run"].append(None)
+                        frois_labels_avail.append(parcels_labels_all)
+                except ValueError:
+                    warnings.warn(
+                        f"Subject {subject} does not have the following fROI, "
+                        f"skipping: {froi}"
                     )
-            frois = np.concatenate(frois, axis=0)
-
-            count_i = 0
-            overlap_diff_task = []
-            for task_froi_ii, task_froi_i in enumerate(self.task_frois):
-                n_iter_i = (
-                    1 if isinstance(task_froi_i, str) else len(task_froi_i[1])
-                )
-                count_j = count_i + n_iter_i
-                for task_froi_jj, task_froi_j in enumerate(
-                    self.task_frois[task_froi_ii + 1 :]
-                ):
-                    n_iter_j = (
-                        1
-                        if isinstance(task_froi_j, str)
-                        else len(task_froi_j[1])
-                    )
-                    for froi_iter_i in range(count_i, count_i + n_iter_i):
-                        for froi_iter_j in range(count_j, count_j + n_iter_j):
-                            overlap_results = self._compute_overlap(
-                                frois[froi_iter_i],
-                                frois[froi_iter_j],
-                                self.kind,
-                            )
-                            overlap_results["task1"] = (
-                                flattened_localizer_tasks[froi_iter_i]
-                            )
-                            overlap_results["task2"] = (
-                                flattened_localizer_tasks[froi_iter_j]
-                            )
-                            overlap_results["localizer1"] = (
-                                flattened_localizer_names[froi_iter_i]
-                            )
-                            overlap_results["localizer2"] = (
-                                flattened_localizer_names[froi_iter_j]
-                            )
-                            overlap_diff_task_i = pd.DataFrame(
-                                {
-                                    "task1": overlap_results["task1"],
-                                    "task2": overlap_results["task2"],
-                                    "localizer1": overlap_results[
-                                        "localizer1"
-                                    ],
-                                    "localizer2": overlap_results[
-                                        "localizer2"
-                                    ],
-                                    "froi1": overlap_results.apply(
-                                        lambda x: parcels_labels[x["task1"]][
-                                            x["localizer1"]
-                                        ][int(x["froi_id1"])],
-                                        axis=1,
-                                    ),
-                                    "froi2": overlap_results.apply(
-                                        lambda x: parcels_labels[x["task2"]][
-                                            x["localizer2"]
-                                        ][int(x["froi_id2"])],
-                                        axis=1,
-                                    ),
-                                    "overlap": overlap_results["overlap"],
-                                }
-                            )
-                            overlap_diff_task.append(overlap_diff_task_i)
-
-                    count_j += n_iter_j
-                count_i += n_iter_i
-            overlap_diff_task = pd.concat(overlap_diff_task)
-
-            # Same-task condition
-            overlap_same_task = []
-            for task_froi in self.task_frois:
-                if isinstance(task_froi, str):
                     continue
-                task, frois = task_froi
 
-                frois_runs = _get_frois_runs_single_task(subject, task, frois)
-                frois_orth = _get_frois_orth_single_task(subject, task, frois)
-
-                for i in range(len(frois_runs)):
-                    for j in range(len(frois_runs)):
-                        overlap_results = self._compute_overlap(
-                            frois_runs[i], frois_orth[j], self.kind
+            for i, froi1 in enumerate(frois_avail):
+                for j, froi2 in enumerate(
+                    frois_avail
+                ):  # TODO: overlap is also not symmetric, see the notes in spcorr.py
+                    if not isinstance(froi1, FROIConfig) or not isinstance(
+                        froi2, FROIConfig
+                    ):
+                        okorth = True
+                    else:
+                        okorth = _check_orthogonal(
+                            subject,
+                            froi1.task,
+                            froi1.contrasts,
+                            froi2.task,
+                            froi2.contrasts,
                         )
-                        overlap_results["task1"] = task
-                        overlap_results["task2"] = task
-                        overlap_results["localizer1"] = frois[i].localizer
-                        overlap_results["localizer2"] = frois[j].localizer
-                        overlap_same_task_i = pd.DataFrame(
-                            {
-                                "task1": overlap_results["task1"],
-                                "task2": overlap_results["task2"],
-                                "localizer1": overlap_results["localizer1"],
-                                "localizer2": overlap_results["localizer2"],
-                                "froi1": overlap_results.apply(
-                                    lambda x: parcels_labels[x["task1"]][
-                                        x["localizer1"]
-                                    ][int(x["froi_id1"])],
-                                    axis=1,
-                                ),
-                                "froi2": overlap_results.apply(
-                                    lambda x: parcels_labels[x["task2"]][
-                                        x["localizer2"]
-                                    ][int(x["froi_id2"])],
-                                    axis=1,
-                                ),
-                                "overlap": overlap_results["overlap"],
-                            }
-                        )
-                        overlap_same_task.append(overlap_same_task_i)
+                    if okorth:
+                        froi1_data = frois_data_avail["all"][i]
+                        froi2_data = frois_data_avail["all"][j]
+                    else:
+                        froi1_data = frois_data_avail["orth"][i]
+                        froi2_data = frois_data_avail["run"][j]
 
-            if len(overlap_same_task) > 0:
-                overlap_same_task = pd.concat(overlap_same_task)
-                overlap_all = pd.concat([overlap_diff_task, overlap_same_task])
-            else:
-                overlap_all = overlap_diff_task
+                    # Trim voxels not labeled in both fROIs
+                    non_zero_1 = np.sum(froi1_data != 0, axis=0) > 0
+                    non_zero_2 = np.sum(froi2_data != 0, axis=0) > 0
+                    non_zero_either = non_zero_1 | non_zero_2
+                    froi1_data = froi1_data[:, non_zero_either]
+                    froi2_data = froi2_data[:, non_zero_either]
 
-            overlap_all.reset_index(inplace=True, drop=True)
-            overlap_all["subject"] = subject
-            overlap_all_subjects.append(overlap_all)
+                    overlap = self._compute_overlap(
+                        froi1_data, froi2_data, kind=self.kind
+                    )
+                    overlap_estimates = pd.DataFrame(
+                        {
+                            "subject": [subject] * len(overlap),
+                            "group1": [i] * len(overlap),
+                            "group2": [j] * len(overlap),
+                            "froi1": overlap["froi_id1"].map(
+                                lambda x: frois_labels_avail[i][x]
+                            ),
+                            "froi2": overlap["froi_id2"].map(
+                                lambda x: frois_labels_avail[j][x]
+                            ),
+                            "overlap": overlap["overlap"],
+                        }
+                    )
+                    overlap_all_subjects.append(overlap_estimates)
 
         overlap_all_subjects = pd.concat(overlap_all_subjects)
-        return overlap_all_subjects
+
+        # Form a dataframe for available fROIs
+        frois_avail_df = pd.DataFrame(
+            {
+                "group": list(range(len(frois_avail))),
+                "task": [
+                    froi.task if isinstance(froi, FROIConfig) else None
+                    for froi in frois_avail
+                ],
+                "contrasts": [
+                    froi.contrasts if isinstance(froi, FROIConfig) else None
+                    for froi in frois_avail
+                ],
+                "conjunction_type": [
+                    (
+                        froi.conjunction_type
+                        if isinstance(froi, FROIConfig)
+                        else None
+                    )
+                    for froi in frois_avail
+                ],
+                "threshold_type": [
+                    (
+                        froi.threshold_type
+                        if isinstance(froi, FROIConfig)
+                        else None
+                    )
+                    for froi in frois_avail
+                ],
+                "threshold_value": [
+                    (
+                        froi.threshold_value
+                        if isinstance(froi, FROIConfig)
+                        else None
+                    )
+                    for froi in frois_avail
+                ],
+                "parcels": [
+                    froi.parcels if isinstance(froi, FROIConfig) else froi
+                    for froi in frois_avail
+                ],
+            }
+        )
+
+        overlap_folder = get_overlap_estimation_folder()
+        if not os.path.exists(overlap_folder):
+            os.makedirs(overlap_folder)
+
+        overlap_path, config_path = get_next_overlap_estimation_path()
+        overlap_all_subjects.to_csv(overlap_path, index=False)
+        frois_avail_df.to_csv(config_path, index=False)
+
+        if return_output:
+            return overlap_all_subjects, frois_avail_df
 
     @classmethod
     def _compute_overlap(

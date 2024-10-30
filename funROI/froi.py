@@ -1,304 +1,164 @@
 import os
-from .utils import (
-    get_froi_path,
-    get_runs,
-    get_parcels,
-    get_subject_froi_folder,
-)
+from .utils import get_froi_path, get_runs, get_subject_froi_folder, FROIConfig
+from .parcels import get_parcels
 from .contrast import (
-    get_contrasts_all_multi_task,
-    get_contrasts_orth_single_task,
-    get_contrasts_runs_single_task,
+    _get_contrast_all,
+    _get_contrast_orth,
+    _get_contrast_run,
+    _create_p_map_mask,
 )
-from typing import List, Union, Tuple, Optional, Dict
+from typing import Optional
 from nibabel.nifti1 import Nifti1Image
 import numpy as np
-from .localizer import (
-    get_localizer_info,
-    create_p_map_mask,
-    register_localizer,
-)
 from nilearn.image import load_img, new_img_like
-from collections import namedtuple
-import logging
 
-LOGGER = logging.getLogger(__name__)
 
-FROI = namedtuple(
-    "FROI",
-    [
-        "localizer",
-        "contrasts",
-        "conjunctionType",
-        "thresholdType",
-        "thresholdValue",
-        "parcels",
-    ],
+FROIConfig.__new__.__defaults__ = FROIConfig(
+    task="",
+    contrasts=[],
+    conjunction_type="and",
+    threshold_type="none",
+    threshold_value=None,
+    parcels=None,
 )
 
-FROI.__new__.__defaults__ = (None,) * len(FROI._fields)
 
-
-def get_frois(
-    subjects: List[str], task_frois: List[Tuple[str, List[FROI]]]
-) -> Dict[str, Dict[Tuple[str, str], Nifti1Image]]:
+def _get_froi_all(subject: str, froi: FROIConfig) -> np.ndarray:
     """
-    Get the froi maps for tasks for a subject.
-
-    Parameters
-    ----------
-    subject : str
-        The subject ID.
-    task_frois : List[Tuple[str, List[FROI]]]
-        List of (task, frois) tuples.
-
-    Returns
-    -------
-    Dict[str, Dict[Tuple[str, str], np.ndarray]]
-        The froi maps for the tasks,
-        Each key is a subject ID, and each value is a dictionary with
-        (task, localizer) tuple as key and froi map as value.
+    Get the all-run froi maps.
+    Returns the froi maps, shape (1, n_voxels).
     """
-    data = {}
-    for subject in subjects:
-        data[subject] = {}
-        _ = _get_frois_all_multi_task(subject, task_frois)
-        for task, frois in task_frois:
-            for froi in frois:
-                data[subject][(task, froi.localizer)] = load_img(
-                    get_froi_path(
-                        subject,
-                        task,
-                        "all",
-                        froi.localizer,
-                        froi.thresholdType,
-                        froi.thresholdValue,
-                        froi.parcels,
-                    )
-                )
-    return data
+    os.makedirs(get_subject_froi_folder(subject, froi.task), exist_ok=True)
+    froi_path = get_froi_path(
+        subject,
+        froi.task,
+        "all",
+        froi.contrasts,
+        froi.conjunction_type,
+        froi.threshold_type,
+        froi.threshold_value,
+        froi.parcels,
+        create=True,
+    )
+    if os.path.exists(froi_path):
+        img = load_img(froi_path)
+        return img.get_fdata().flatten()[np.newaxis, :]
+
+    parcels_img, _ = get_parcels(froi.parcels)
+    assert parcels_img is not None, "Parcels image not found."
+
+    p_maps = []
+    for contrast in froi.contrasts:
+        p_maps.append(_get_contrast_all(subject, froi.task, contrast, "p"))
+    p_maps = np.stack(p_maps, axis=0)
+
+    parcels_data = parcels_img.get_fdata()
+    froi_mask = _generate_froi_mask(
+        p_maps,
+        parcels_data.flatten(),
+        froi.conjunction_type,
+        froi.threshold_type,
+        froi.threshold_value,
+    )
+
+    # save the fROI mask
+    froi_img = new_img_like(
+        parcels_img,
+        froi_mask[0].reshape(parcels_data.shape).astype(np.float32),
+    )
+    froi_img.to_filename(froi_path)
+
+    return froi_mask
 
 
-def _fill_froi_info(subject: str, task: str, froi: FROI) -> FROI:
+def _get_froi_orth(subject: str, froi: FROIConfig) -> np.ndarray:
     """
-    Fill in the missing fields in the FROI namedtuple.
-
-    Parameters
-    ----------
-    subject : str
-        The subject ID.
-    task : str
-        The task name.
-    froi : FROI
-        The FROI namedtuple.
-
-    Returns
-    -------
-    FROI
-        The FROI namedtuple with filled in fields.
+    Get the orthogonal-run froi maps.
+    Returns the froi maps, shape (n_runs, n_voxels).
     """
-    localizer_info = get_localizer_info(subject, task, froi.localizer)
-    if froi.contrasts is None or froi.conjunctionType is None:
-        assert localizer_info is not None, (
-            f"Localizer {froi.localizer} not found for subject {subject}. "
-            "Please provide contrasts and conjunctionType."
-        )
-        froi = froi._replace(
-            contrasts=localizer_info["contrasts"],
-            conjunctionType=localizer_info["conjunctionType"],
-        )
-    elif localizer_info is None:
-        register_localizer(
-            [subject],
-            froi.localizer,
-            task,
-            froi.contrasts,
-            froi.conjunctionType,
-        )
-
-    return froi
+    return _get_froi_run(subject, froi, orthogonal=True)
 
 
-def _get_frois_all_multi_task(
+def _get_froi_run(
     subject: str,
-    task_frois: List[Tuple[str, List[FROI]]],
-) -> np.ndarray:
-    """
-    Get the all-run froi maps for tasks for a subject.
-
-    Parameters
-    ----------
-    subject : str
-        The subject ID.
-    task_frois : List[Tuple[str, List[FROI]]]
-        List of (task, frois) tuples.
-
-    Returns
-    -------
-    np.ndarray
-        The froi maps for the tasks,
-        shape (n_total_frois, 1, n_voxels).
-    """
-    os.makedirs(get_subject_froi_folder(subject), exist_ok=True)
-    data = []
-    for task, frois in task_frois:
-        for froi in frois:
-            froi = _fill_froi_info(subject, task, froi)
-            froi_path = get_froi_path(
-                subject,
-                task,
-                "all",
-                froi.localizer,
-                froi.thresholdType,
-                froi.thresholdValue,
-                froi.parcels,
-            )
-            if os.path.exists(froi_path):
-                img = load_img(froi_path)
-                data.append(img.get_fdata().flatten()[np.newaxis, :])
-                continue
-
-            parcels_img = get_parcels(froi.parcels)
-            assert parcels_img is not None, "Parcels image not found."
-
-            p_maps = get_contrasts_all_multi_task(
-                subject, [(task, froi.contrasts)], "p"
-            )
-            parcels_data = parcels_img.get_fdata()
-            froi_mask = _generate_froi_mask(
-                p_maps,
-                parcels_data.flatten(),
-                froi.conjunctionType,
-                froi.thresholdType,
-                froi.thresholdValue,
-            )
-            data.append(froi_mask)
-
-            # save the froi mask
-            froi_img = new_img_like(
-                parcels_img, froi_mask[0].reshape(parcels_data.shape)
-            )
-            froi_img.to_filename(froi_path)
-
-    return np.stack(data, axis=0)
-
-
-def _get_frois_orth_single_task(
-    subject: str, task: str, frois: List[FROI]
-) -> np.ndarray:
-    """
-    Get the orthogonal-run froi maps for tasks for a subject.
-
-    Parameters
-    ----------
-    subject : str
-        The subject ID.
-    task : str
-        The task name.
-    frois : List[FROI]
-        List of frois.
-
-    Returns
-    -------
-    np.ndarray
-        The froi maps for the tasks,
-        shape (n_frois, n_runs, n_voxels).
-    """
-    return _get_frois_runs_single_task(subject, task, frois, orthogonal=True)
-
-
-def _get_frois_runs_single_task(
-    subject: str,
-    task: str,
-    frois: List[FROI],
+    froi: FROIConfig,
     orthogonal: Optional[bool] = False,
 ) -> np.ndarray:
     """
-    Get the orthogonal-run froi maps for tasks for a subject.
-
-    Parameters
-    ----------
-    subject : str
-        The subject ID.
-    task : str
-        The task name.
-    frois : List[FROI]
-        List of frois.
-    orthogonal : Optional[bool]
-        Whether to use orthogonal runs.
-
-    Returns
-    -------
-    np.ndarray
-        The froi maps for the tasks,
-        shape (n_frois, n_runs, n_voxels).
+    Get the orthogonal-run froi maps.
+    Returns the froi maps, shape (n_runs, n_voxels).
     """
-    os.makedirs(get_subject_froi_folder(subject), exist_ok=True)
-    runs = get_runs(subject, task)
+    os.makedirs(get_subject_froi_folder(subject, froi.task), exist_ok=True)
+    runs = get_runs(subject, froi.task)
 
     data = []
-    for froi in frois:
-        froi = _fill_froi_info(subject, task, froi)
-        data_froi = []
-        for run in runs:
-            file_path = get_froi_path(
-                subject,
-                task,
-                run if not orthogonal else f"orth{run}",
-                froi.localizer,
-                froi.thresholdType,
-                froi.thresholdValue,
-                froi.parcels,
-            )
-            if not os.path.exists(file_path):
-                # If any of the froi masks are missing, redo the process
-                data_froi = []
-                break
-            img = load_img(file_path)
-            data_froi.append(img.get_fdata().flatten())
-
-        if data_froi:
-            data.append(np.stack(data_froi, axis=0))
-            continue
-
-        parcels_img = get_parcels(froi.parcels)
-        assert parcels_img is not None, "Parcels image not found."
-
-        if orthogonal:
-            p_maps = get_contrasts_orth_single_task(
-                subject, task, froi.contrasts, "p"
-            )
-        else:
-            p_maps = get_contrasts_runs_single_task(
-                subject, task, froi.contrasts, "p"
-            )
-        parcels_data = parcels_img.get_fdata()
-        froi_mask = _generate_froi_mask(
-            p_maps,
-            parcels_data.flatten(),
-            froi.conjunctionType,
-            froi.thresholdType,
-            froi.thresholdValue,
+    for run in runs:
+        file_path = get_froi_path(
+            subject,
+            froi.task,
+            run if not orthogonal else f"orth{run}",
+            froi.contrasts,
+            froi.conjunction_type,
+            froi.threshold_type,
+            froi.threshold_value,
+            froi.parcels,
+            create=True,
         )
-        data.append(froi_mask)
+        if not os.path.exists(file_path):
+            # If any of the froi masks are missing, redo the process
+            data = []
+            break
+        img = load_img(file_path)
+        data.append(img.get_fdata().flatten())
 
-        # save the froi mask
-        for run_i, run in enumerate(runs):
-            froi_path = get_froi_path(
-                subject,
-                task,
-                run if not orthogonal else f"orth{run}",
-                froi.localizer,
-                froi.thresholdType,
-                froi.thresholdValue,
-                froi.parcels,
-            )
-            froi_img = new_img_like(
-                parcels_img, froi_mask[run_i].reshape(parcels_data.shape)
-            )
-            froi_img.to_filename(froi_path)
+    if data:
+        return np.stack(data, axis=0)
 
-    return np.stack(data, axis=0)
+    parcels_img, _ = get_parcels(froi.parcels)
+    if parcels_img is None:
+        raise ValueError("Parcels image not found.")
+
+    if orthogonal:
+        p_maps = []
+        for contrast in froi.contrasts:
+            p_maps.append(
+                _get_contrast_orth(subject, froi.task, contrast, "p")
+            )
+        p_maps = np.stack(p_maps, axis=0)
+    else:
+        p_maps = []
+        for contrast in froi.contrasts:
+            p_maps.append(_get_contrast_run(subject, froi.task, contrast, "p"))
+        p_maps = np.stack(p_maps, axis=0)
+    parcels_data = parcels_img.get_fdata()
+    froi_mask = _generate_froi_mask(
+        p_maps,
+        parcels_data.flatten(),
+        froi.conjunction_type,
+        froi.threshold_type,
+        froi.threshold_value,
+    )
+
+    # save the fROI mask
+    for run_i, run in enumerate(runs):
+        froi_path = get_froi_path(
+            subject,
+            froi.task,
+            run if not orthogonal else f"orth{run}",
+            froi.contrasts,
+            froi.conjunction_type,
+            froi.threshold_type,
+            froi.threshold_value,
+            froi.parcels,
+            create=True,
+        )
+        froi_img = new_img_like(
+            parcels_img,
+            froi_mask[run_i].reshape(parcels_data.shape).astype(np.float32),
+        )
+        froi_img.to_filename(froi_path)
+
+    return froi_mask
 
 
 def _generate_froi_mask(
@@ -359,7 +219,7 @@ def _generate_froi_mask(
     froi_mask = []
     for i in range(p_maps_expanded.shape[0]):
         froi_mask.append(
-            create_p_map_mask(
+            _create_p_map_mask(
                 p_maps_expanded[i],
                 conjunction_type,
                 threshold_type,
@@ -373,27 +233,3 @@ def _generate_froi_mask(
     froi_mask = labels[froi_mask_argmax] * (np.sum(froi_mask, axis=0) != 0)
 
     return froi_mask
-
-
-def flatten_task_frois_labels(
-    task_frois: List[Tuple[str, List[FROI]]]
-) -> Tuple[List[str], List[str]]:
-    """
-    Flatten the task frois labels for tasks.
-
-    Parameters
-    ----------
-    task_frois : List[Tuple[str, List[FROI]]]
-        List of (task, frois) tuples.
-
-    Returns
-    -------
-    Tuple[List[str], List[str]]
-        The task frois labels for tasks
-    """
-    task_labels = []
-    froi_labels = []
-    for task, frois in task_frois:
-        task_labels.extend([task] * len(frois))
-        froi_labels.extend([froi.localizer for froi in frois])
-    return task_labels, froi_labels

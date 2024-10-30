@@ -1,21 +1,26 @@
 import numpy as np
-from ..contrast import (
-    get_contrasts_all_multi_task,
-    get_contrasts_orth_single_task,
-    get_contrasts_runs_single_task,
-    flatten_task_contrasts,
-)
-from ..froi import _get_frois_all_multi_task, FROI
-from typing import List, Tuple, Union
+from ..contrast import _get_contrast_run, _get_contrast_all, _get_contrast_orth
+from ..froi import _get_froi_all, _get_froi_orth
+from typing import List, Tuple, Union, Optional
 import pandas as pd
-from ..utils import get_parcels_labels, get_parcels
+from ..contrast import _check_orthogonal
+from ..parcels import get_parcels
+import warnings
+from ..utils import (
+    FROIConfig,
+    ParcelsConfig,
+    get_spatial_correlation_estimation_folder,
+    get_next_spatial_correlation_estimation_path,
+)
+import os
+import json
 
 
 class SpatialCorrelationEstimator:
     def __init__(
         self,
         subjects: List[str],
-        task_frois: Union[List[Tuple[str, List[FROI]]], List[str]],
+        froi: Union[str, ParcelsConfig, FROIConfig],
     ):
         """
         Initialize the spatial correlation analyzer.
@@ -24,221 +29,223 @@ class SpatialCorrelationEstimator:
         ----------
         subjects : List[str]
             List of subject IDs.
-        frois : Union[List[Tuple[str, List[FROI]]], List[str]]
-            List of (task, frois) tuples, or a list of parcels names.
+        froi : Union[str, ParcelsConfig, FROIConfig]
+            Parcels or fROI configuration.
+
+        Raises
+        ------
+        ValueError
+            If the parcels image is not found.
         """
         self.subjects = subjects
-        self.task_frois = task_frois
+        self.froi = froi
 
-    def compute_spatial_correlation(
-        self, task_contrasts: List[Tuple[str, List[str]]]
+        # Preload the parcels and labels
+        if isinstance(froi, FROIConfig):
+            self.parcels_img, self.parcels_labels = get_parcels(froi.parcels)
+            self.use_parcels = False
+        else:
+            self.parcels_img, self.parcels_labels = get_parcels(froi)
+            self.use_parcels = True
+
+    def run(
+        self,
+        effects: List[Tuple[str, List[str]]],
+        return_output: Optional[bool] = False,
     ) -> pd.DataFrame:
         """
         Compute the spatial correlation between fROIs.
 
         Parameters
         ----------
-        task_contrasts : List[Tuple[str, List[str]]]
+        effects : List[Tuple[str, List[str]]]
             List of (task, contrasts) tuples.
 
         Returns
         -------
         spatial_corr_df : pd.DataFrame
             columns=[
-                "subject", "localizer_task", "localizer_name", "froi",
-                "task1", "task2", "effect1", "effect2", "fisher_z"
+                "subject", "froi", "task1", "task2", "effect1", "effect2",
+                "fisher_z"
             ]
             The spatial correlation DataFrame.
         """
-        parcels_labels = []
-        parcels_labels_sorted_keys = []
-        flattened_localizer_tasks = []
-        flattened_localizer_names = []
-        for i, task_froi in enumerate(self.task_frois):
-            if isinstance(task_froi, str):
-                _, labels = get_parcels_labels(task_froi)
-                parcels_labels.append(labels)
-                parcels_labels_sorted_keys.append(sorted(labels.keys()))
-                flattened_localizer_tasks.append(None)
-                flattened_localizer_names.append(task_froi)
-            else:
-                task, frois = task_froi
-                for froi in frois:
-                    _, labels = get_parcels_labels(froi.parcels)
-                    parcels_labels.append(labels)
-                    parcels_labels_sorted_keys.append(sorted(labels.keys()))
-                    flattened_localizer_tasks.append(task)
-                    flattened_localizer_names.append(froi.localizer)
-
-        effect_tasks_flattened, effect_names_flattened = (
-            flatten_task_contrasts(task_contrasts)
-        )
-
         spatial_corr_all_subjects = []
         for subject in self.subjects:
-            frois = []
-            for task_froi_i, task_froi in enumerate(self.task_frois):
-                if isinstance(task_froi, str):
-                    parcels_img = get_parcels(task_froi)
-                    parcels_flattened = parcels_img.get_fdata().flatten()
-                    frois.append(parcels_flattened[np.newaxis, np.newaxis, :])
-                else:
-                    frois.append(
-                        _get_frois_all_multi_task(subject, [task_froi])
+            # Check orthogonality between fROI and each contrast first,
+            # If any non-orthogonal, do orthogonalization
+            # If both non-orthogonal, skip if contrast also non-orthogonal
+            # to each other.
+            if self.use_parcels:
+                froi_data = {
+                    "all": self.parcels_img.get_fdata().flatten()[None, :],
+                }
+            else:
+                froi_data = {
+                    "all": _get_froi_all(subject, self.froi),
+                    "orth": _get_froi_orth(subject, self.froi),
+                }
+
+            tasks_avail = []
+            contrasts_avail = []
+            orth2froi = []
+            effect_data = {"all": [], "orth": [], "run": []}
+            for task, contrasts in effects:
+                for contrast in contrasts:
+                    try:
+                        contrast_all = _get_contrast_all(
+                            subject, task, contrast, "effect"
+                        )
+                    except ValueError:
+                        warnings.warn(
+                            f"Subject {subject} task {task} contrast {contrast} not found, skipping"
+                        )
+                        continue
+
+                    tasks_avail.append(task)
+                    contrasts_avail.append(contrast)
+                    if self.use_parcels:
+                        okorth = True
+                    else:
+                        okorth = _check_orthogonal(
+                            subject,
+                            self.froi.task,
+                            self.froi.contrasts,
+                            task,
+                            [contrast],
+                        )
+                    orth2froi.append(okorth)
+
+                    if okorth:
+                        effect_data["all"].append(contrast_all)
+                    else:
+                        effect_data["all"].append(None)
+                    effect_data["orth"].append(
+                        _get_contrast_orth(subject, task, contrast, "effect")
+                    )
+                    effect_data["run"].append(
+                        _get_contrast_run(subject, task, contrast, "effect")
                     )
 
-            frois = np.concatenate(
-                frois, axis=0
-            ).squeeze()  # get rid of run dimension
-
-            effects = get_contrasts_all_multi_task(
-                subject, task_contrasts, "effect"
-            )
-            spcorr_all_subject = []
-
-            # Treat fORIs separately for efficiency since each fROI is small
-            for froi_i, froi in enumerate(frois):
-                spcorr_all = []
-                effects_masked_i = self.mask_maps(effects, froi)
-                for froi_label_i, masked_label_i in enumerate(
-                    effects_masked_i
-                ):
-                    masked_label_i = masked_label_i[None, :]
-                    nan_mask = np.isnan(masked_label_i).all(axis=(0, 1, 2))
-                    masked_label_i = masked_label_i[:, :, :, ~nan_mask]
-
-                    spatial_corr = self._compute_correlation_fisher_z(
-                        masked_label_i, masked_label_i
+            for effect1_idx in range(len(tasks_avail)):
+                task1, effect1 = (
+                    tasks_avail[effect1_idx],
+                    contrasts_avail[effect1_idx],
+                )
+                for effect2_idx in range(
+                    len(tasks_avail)
+                ):  # For now, spcorr not symmetric because all-but-one orthogonalization does not have the same counter-part, so both spcorr(a,b) and spcorr(b,a) are computed
+                    task2, effect2 = (
+                        tasks_avail[effect2_idx],
+                        contrasts_avail[effect2_idx],
                     )
-                    spcorr_all_i = pd.DataFrame(
+                    okorth_between_effects = _check_orthogonal(
+                        subject, task1, [effect1], task2, [effect2]
+                    )
+                    if not okorth_between_effects:
+                        if (
+                            not orth2froi[effect1_idx]
+                            and not orth2froi[effect2_idx]
+                        ):
+                            warnings.warn(
+                                f"Subject {subject}: skipping spatial "
+                                f"correlation between {task1} {effect1} and "
+                                f"{task2} {effect2} because they are not "
+                                "orthogonal to each other, and both not "
+                                "orthogonal to fROI."
+                            )
+                            continue
+                        if not orth2froi[effect1_idx]:
+                            effect1_data = effect_data["run"][effect1_idx]
+                            effect2_data = effect_data["orth"][effect2_idx]
+                            froi = froi_data["orth"]
+                        elif not orth2froi[effect2_idx]:
+                            effect1_data = effect_data["orth"][effect1_idx]
+                            effect2_data = effect_data["run"][effect2_idx]
+                            froi = froi_data["orth"]
+                        else:
+                            effect1_data = effect_data["orth"][effect1_idx]
+                            effect2_data = effect_data["run"][effect2_idx]
+                            froi = froi_data["all"]
+                    else:
+                        if (
+                            not orth2froi[effect1_idx]
+                            and not orth2froi[effect2_idx]
+                        ):
+                            effect1_data = effect_data["run"][effect1_idx]
+                            effect2_data = effect_data["run"][effect2_idx]
+                            froi = froi_data["orth"]
+                        if not orth2froi[effect1_idx]:
+                            effect1_data = effect_data["run"][effect1_idx]
+                            effect2_data = effect_data["all"][effect2_idx]
+                            froi = froi_data["orth"]
+                        elif not orth2froi[effect2_idx]:
+                            effect1_data = effect_data["all"][effect1_idx]
+                            effect2_data = effect_data["run"][effect2_idx]
+                            froi = froi_data["orth"]
+                        else:
+                            effect1_data = effect_data["all"][effect1_idx]
+                            effect2_data = effect_data["all"][effect2_idx]
+                            froi = froi_data["all"]
+
+                    # Trim voxels not labeled in both fROI and both effects
+                    non_zero_froi = np.sum(froi != 0, axis=0) > 0
+                    non_zero_any = non_zero_froi
+                    froi = froi[:, non_zero_any]
+                    effect1_data = effect1_data[:, non_zero_any]
+                    effect2_data = effect2_data[:, non_zero_any]
+
+                    # Apply froi mask
+                    effect1_data_mapped = self._apply_froi(
+                        effect1_data[None, :], froi
+                    )
+                    effect2_data_mapped = self._apply_froi(
+                        effect2_data[None, :], froi
+                    )
+
+                    sorted_labels = np.sort(np.unique(froi))
+                    sorted_labels = sorted_labels[sorted_labels != 0]
+
+                    spcorr = self._compute_correlation_fisher_z(
+                        effect1_data_mapped, effect2_data_mapped
+                    )
+
+                    spatial_corr = pd.DataFrame(
                         {
-                            "task1": spatial_corr["contrast1"].apply(
-                                lambda x: effect_tasks_flattened[x]
+                            "subject": [subject] * len(spcorr),
+                            "froi": spcorr["froi_id"].map(
+                                lambda x: self.parcels_labels[sorted_labels[x]]
                             ),
-                            "task2": spatial_corr["contrast2"].apply(
-                                lambda x: effect_tasks_flattened[x]
-                            ),
-                            "effect1": spatial_corr["contrast1"].apply(
-                                lambda x: effect_names_flattened[x]
-                            ),
-                            "effect2": spatial_corr["contrast2"].apply(
-                                lambda x: effect_names_flattened[x]
-                            ),
-                            "fisher_z": spatial_corr["fisher_z"],
+                            "task1": [task1] * len(spcorr),
+                            "task2": [task2] * len(spcorr),
+                            "effect1": [effect1] * len(spcorr),
+                            "effect2": [effect2] * len(spcorr),
+                            "fisher_z": spcorr["fisher_z"],
                         }
                     )
-                    spcorr_all_i["localizer_task"] = flattened_localizer_tasks[
-                        froi_i
-                    ]
-                    spcorr_all_i["localizer_name"] = flattened_localizer_names[
-                        froi_i
-                    ]
-                    spcorr_all_i["froi"] = parcels_labels[froi_i][
-                        parcels_labels_sorted_keys[froi_i][froi_label_i]
-                    ]
-                    spcorr_all.append(spcorr_all_i)
 
-                spcorr_all = pd.concat(spcorr_all)
+                    spatial_corr_all_subjects.append(spatial_corr)
 
-                # Same-task condition
-                spcorr_same_task = []
-                for task, contrasts in task_contrasts:
-                    effect_run = get_contrasts_runs_single_task(
-                        subject, task, contrasts, "effect"
-                    )
-                    effect_orth = get_contrasts_orth_single_task(
-                        subject, task, contrasts, "effect"
-                    )
-                    effect_run_masked = self.mask_maps(effect_run, froi)
-                    effect_orth_masked = self.mask_maps(effect_orth, froi)
+        spatial_corr_all_subjects = pd.concat(spatial_corr_all_subjects)
 
-                    for froi_label_i in range(effect_run_masked.shape[0]):
-                        effect_run_masked_i = effect_run_masked[froi_label_i][
-                            None, :
-                        ]
-                        effect_orth_masked_i = effect_orth_masked[
-                            froi_label_i
-                        ][None, :]
+        spcorr_folder = get_spatial_correlation_estimation_folder()
+        if not os.path.exists(spcorr_folder):
+            os.makedirs(spcorr_folder)
 
-                        nan_mask_run = np.isnan(effect_run_masked_i).all(
-                            axis=(0, 1, 2)
-                        )
-                        nan_mask_orth = np.isnan(effect_orth_masked_i).all(
-                            axis=(0, 1, 2)
-                        )
-                        mask_to_remove = nan_mask_run & nan_mask_orth
-                        valid_mask = ~mask_to_remove
+        spcorr_path, config_path = (
+            get_next_spatial_correlation_estimation_path()
+        )
+        spatial_corr_all_subjects.to_csv(spcorr_path, index=False)
+        config = {
+            "subjects": self.subjects,
+            "froi": self.froi,
+            "effects": effects,
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f)
 
-                        effect_run_masked_i = effect_run_masked_i[
-                            :, :, :, valid_mask
-                        ]
-                        effect_orth_masked_i = effect_orth_masked_i[
-                            :, :, :, valid_mask
-                        ]
-
-                        spatial_corr = self._compute_correlation_fisher_z(
-                            effect_run_masked_i, effect_orth_masked_i
-                        )
-                        spcorr_same_task_i = pd.DataFrame(
-                            {
-                                "task1": [task] * spatial_corr.shape[0],
-                                "task2": [task] * spatial_corr.shape[0],
-                                "effect1": spatial_corr["contrast1"].apply(
-                                    lambda x: contrasts[x]
-                                ),
-                                "effect2": spatial_corr["contrast2"].apply(
-                                    lambda x: contrasts[x]
-                                ),
-                                "fisher_z": spatial_corr["fisher_z"],
-                            }
-                        )
-                        spcorr_same_task_i["localizer_task"] = (
-                            flattened_localizer_tasks[froi_i]
-                        )
-                        spcorr_same_task_i["localizer_name"] = (
-                            flattened_localizer_names[froi_i]
-                        )
-                        spcorr_same_task_i["froi"] = parcels_labels[froi_i][
-                            parcels_labels_sorted_keys[froi_i][froi_label_i]
-                        ]
-                        spcorr_same_task.append(spcorr_same_task_i)
-
-                spcorr_same_task = pd.concat(spcorr_same_task)
-                spcorr_all.set_index(
-                    [
-                        "task1",
-                        "task2",
-                        "effect1",
-                        "effect2",
-                        "localizer_task",
-                        "localizer_name",
-                        "froi",
-                    ],
-                    inplace=True,
-                )
-                spcorr_same_task.set_index(
-                    [
-                        "task1",
-                        "task2",
-                        "effect1",
-                        "effect2",
-                        "localizer_task",
-                        "localizer_name",
-                        "froi",
-                    ],
-                    inplace=True,
-                )
-
-                spcorr_all.update(spcorr_same_task)
-                spcorr_all.reset_index(inplace=True)
-                spcorr_all_subject.append(spcorr_all)
-
-            spcorr_all_subject = pd.concat(spcorr_all_subject)
-            spcorr_all_subject["subject"] = subject
-            spatial_corr_all_subjects.append(spcorr_all_subject)
-
-        spatial_corr_df = pd.concat(spatial_corr_all_subjects)
-        return spatial_corr_df
+        if return_output:
+            return spatial_corr_all_subjects
 
     @classmethod
     def _compute_correlation_fisher_z(
@@ -329,7 +336,7 @@ class SpatialCorrelationEstimator:
         return spatial_corr_df
 
     @classmethod
-    def mask_maps(cls, data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def _apply_froi(cls, data: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """
         Mask data with a mask.
 
@@ -337,7 +344,7 @@ class SpatialCorrelationEstimator:
         ----------
         data : np.ndarray, shape (n_contrast, n_runs, n_voxels)
             The data to be masked.
-        mask : np.ndarray, shape (n_voxels,)
+        mask : np.ndarray, shape (n_runs, n_voxels)
             The mask labeled by non-zero integers.
 
         Returns
@@ -351,7 +358,7 @@ class SpatialCorrelationEstimator:
         mask_labels = mask_labels[mask_labels != 0]
         mask_expanded = (mask == (mask_labels[:, None, None, None])).astype(
             float
-        )  # n_labels x n_voxels
+        )  # n_labels x 1 x n_runs x n_voxels
         mask_expanded[mask_expanded == 0] = np.nan
         masked_data = (
             data[np.newaxis, :, :, :] * mask_expanded

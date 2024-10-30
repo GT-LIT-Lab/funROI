@@ -10,6 +10,7 @@ from ..utils import (
     get_subject_contrast_folder,
     get_contrast_path,
     get_dof_path,
+    get_design_matrix_path,
 )
 
 from ..contrast import register_contrast
@@ -28,8 +29,8 @@ def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
     task : str
         Task label.
     """
-    os.makedirs(get_subject_model_folder(subject), exist_ok=True)
-    os.makedirs(get_subject_contrast_folder(subject), exist_ok=True)
+    os.makedirs(get_subject_model_folder(subject, task), exist_ok=True)
+    os.makedirs(get_subject_contrast_folder(subject, task), exist_ok=True)
 
     spm_mat_path = os.path.join(spm_dir, "SPM.mat")
     assert os.path.exists(spm_mat_path), f"'SPM.mat' not found in {spm_dir}"
@@ -37,9 +38,17 @@ def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
         spm = f["SPM"]
 
         dof_residual = int(spm["xX"]["erdf"][0, 0])
-        # X = spm['xX']['X'][()]
-        # m = X.shape[1]  # Number of model parameters
-        # nf = m + dof_residual
+
+        design_matrix = f["/SPM/xX/X"]
+        design_matrix_names = [
+            "".join([chr(c[0]) for c in f[fname[0]]])
+            for fname in f["/SPM/xX/name"]
+        ]
+        design_matrix_df = pd.DataFrame(
+            design_matrix[()].T, columns=design_matrix_names
+        )
+        design_matrix_path = get_design_matrix_path(subject, task)
+        design_matrix_df.to_csv(design_matrix_path, index=False)
 
         Bcov = spm["xX"]["Bcov"][()]  # covariance matrix (Bcov)
         con_fnames = f["/SPM/xCon/name"]

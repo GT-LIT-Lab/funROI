@@ -44,6 +44,7 @@ def run_first_level(
     subjects: List[str],
     tasks: List[str],
     space: str,
+    res: Optional[int] = None,
     confound_labels: Optional[List[str]] = [],
     **args,
 ):
@@ -58,6 +59,8 @@ def run_first_level(
         List of task labels.
     space : str
         Space of the images.
+    res : int, optional
+        Resolution of the images.
     confound_labels : list of str, optional
         List of confound labels to include in the design matrix.
     **args
@@ -66,13 +69,19 @@ def run_first_level(
     os.makedirs(get_bids_deriv_folder(), exist_ok=True)
     dofs = {}
     for task in tasks:
-        # Load data and model from preprocessed data
+        # TODO: If more are added, change the input to get a filter dict
+        img_filters = []
+        if res is not None:
+            img_filters.append(("res", str(res)))
+
         (models, models_run_imgs, models_events, models_confounds) = (
             first_level_from_bids(
                 get_bids_data_folder(),
                 task,
                 sub_labels=subjects,
+                space_label=space,
                 derivatives_folder=get_bids_preprocessed_folder_relative(),
+                img_filters=img_filters,
                 slice_time_ref=None,
             )
         )
@@ -85,9 +94,11 @@ def run_first_level(
                 models_confounds[subject_i],
             )
             subject_label = model.subject_label
-            os.makedirs(get_subject_model_folder(subject_label), exist_ok=True)
             os.makedirs(
-                get_subject_contrast_folder(subject_label), exist_ok=True
+                get_subject_model_folder(subject_label, task), exist_ok=True
+            )
+            os.makedirs(
+                get_subject_contrast_folder(subject_label, task), exist_ok=True
             )
 
             for run_i in range(len(events)):
@@ -95,7 +106,9 @@ def run_first_level(
                 imgs_i = load_img(imgs[run_i])
                 frame_times = np.arange(imgs_i.shape[-1]) * model.t_r
                 if model.slice_time_ref is not None:
-                    frame_times += model.slice_time_ref * model.t_r
+                    frame_times = (
+                        frame_times + model.slice_time_ref * model.t_r
+                    )
                 design_matrix = make_first_level_design_matrix(
                     frame_times=frame_times, events=events_i, **args
                 )
@@ -113,18 +126,22 @@ def run_first_level(
                 ses_label = re.search(r"ses-(\w+)_", imgs[run_i]).group(1)
                 task_label = re.search(r"task-(\w+)_", imgs[run_i]).group(1)
                 run_label = re.search(r"run-(\d+)_", imgs[run_i]).group(1)
+                filters = [
+                    ("ses", ses_label),
+                    ("task", task_label),
+                    ("run", run_label),
+                    ("space", space),
+                    ("desc", "brain"),
+                ]
+                if res is not None:
+                    filters.append(("res", str(res)))
+
                 mask_img = load_img(
                     get_bids_files(
                         get_bids_preprocessed_folder(),
-                        sub_label=f"sub-{subject_label}",
+                        sub_label=subject_label,
                         modality_folder="func",
-                        filters=[
-                            ("ses", ses_label),
-                            ("task", task_label),
-                            ("run", run_label),
-                            ("space", space),
-                            ("desc", "brain"),
-                        ],
+                        filters=filters,
                         file_tag="mask",
                         file_type="nii.gz",
                     )[0]
@@ -153,10 +170,22 @@ def run_first_level(
                     pickle.dump(estimates, f)
 
                 # Save design matrix
-                design_matrix.to_csv(
-                    get_design_matrix_path(subject_label, task, run_i + 1),
-                    index=False,
+                design_matrix_path = get_design_matrix_path(
+                    subject_label, task
                 )
+                design_matrix["run"] = run_i + 1
+                design_matrix.reset_index(inplace=True, names=["frame_times"])
+                design_matrix.set_index(["run", "frame_times"], inplace=True)
+                if not os.path.exists(design_matrix_path):
+                    design_matrix.to_csv(design_matrix_path, index=True)
+                else:
+                    design_matrix_prev = pd.read_csv(
+                        design_matrix_path, index_col=["run", "frame_times"]
+                    )
+                    design_matrix = pd.concat(
+                        [design_matrix_prev, design_matrix], axis=0
+                    )
+                    design_matrix.to_csv(design_matrix_path, index=True)
 
                 vars = design_matrix.columns
                 for var_i, var in enumerate(vars):
@@ -218,11 +247,11 @@ def run_first_level(
 
 def get_first_level_model_paths(subject: str, task: str, run: int):
     labels_path = os.path.join(
-        get_subject_model_folder(subject),
+        get_subject_model_folder(subject, task),
         f"sub-{subject}_task-{task}_run-{run}_model-labels.pkl",
     )
     estimates_path = os.path.join(
-        get_subject_model_folder(subject),
+        get_subject_model_folder(subject, task),
         f"sub-{subject}_task-{task}_run-{run}_model-estimates.pkl",
     )
     return labels_path, estimates_path

@@ -1,18 +1,22 @@
 import numpy as np
 from scipy.ndimage import convolve1d
 from scipy.special import erf
-from ..localizer import Localizer, get_localizers
 from ..utils import (
+    get_runs,
     get_parcels_path,
     get_contrast_path,
     get_parcels_config_path,
-    harmonic_mean
+    harmonic_mean,
+    validate_arguments,
+    get_parcels_folder,
 )
-import glob
+from ..contrast import _get_contrast_orth, _create_p_map_mask
 from typing import List, Union, Optional
 from nibabel.nifti1 import Nifti1Image
+from nilearn.image import load_img
 from nilearn.image import smooth_img
 import json
+import os
 
 
 class ParcelsGenerator:
@@ -43,44 +47,59 @@ class ParcelsGenerator:
         self.use_spm_smooth = use_spm_smooth
         self.parcels_template_img = None
         self.parcels = None
-        self.info = []
-        self._data = []
+        self.source = []
+        self._binary_masks_by_run = []
         self._binary_masks = None
+        self.filtering = {"min_voxel_size": 0, "overlap_thr_roi": 0}
 
+    @validate_arguments(
+        p_threshold_type={"none", "bonferroni", "fdr"},
+        conjunction_type={"min", "max", "sum", "prod", "and", "or"},
+    )
     def add_subjects(
         self,
         subjects: List[str],
         task: str,
-        localizer: Union[str, Localizer],
-        threshold_type: str,
-        threshold_value: float,
+        contrasts: List[str],
+        p_threshold_type: str,
+        p_threshold_value: float,
+        conjunction_type: Optional[str] = "and",
     ):
         """
         Add subjects and localizers for ROI parcellation.
-
-        Parameters
-        ----------
-        subjects : List[str]
-            List of subject IDs.
-        task : str
-            Task name.
-        localizer : Union[str, Localizer]
-            Localizer name or Localizer object.
         """
-        self.info.append(
-            (subjects, task, localizer, threshold_type, threshold_value)
+        self.source.append(
+            (
+                subjects,
+                task,
+                contrasts,
+                conjunction_type,
+                p_threshold_type,
+                p_threshold_value,
+            )
         )
 
-        localizer_maps = get_localizers(
-            subjects, task, localizer, threshold_type, threshold_value
-        )
-
-        self._data.extend(localizer_maps)
+        binary_masks_by_run = []
+        for subject in subjects:
+            p_maps = []
+            for contrast in contrasts:
+                p_map_contrast = []
+                for run in get_runs(subject, task):
+                    p_map_contrast.append(
+                        _get_contrast_orth(subject, task, contrast, "p")
+                    )
+                p_maps.append(np.stack(p_map_contrast, axis=0))
+            p_maps = np.concat(p_maps, axis=0)
+            mask = _create_p_map_mask(
+                p_maps, conjunction_type, p_threshold_type, p_threshold_value
+            )
+            binary_masks_by_run.append(mask)
+        self._binary_masks_by_run.extend(binary_masks_by_run)
 
         binary_masks = []
         for subjecti, subject in enumerate(subjects):
             binary_masks.append(
-                np.mean(localizer_maps[subjecti], axis=0) > 0.5
+                np.mean(binary_masks_by_run[subjecti], axis=0) > 0.5
             )
         binary_masks = np.stack(binary_masks, axis=0)
 
@@ -91,33 +110,26 @@ class ParcelsGenerator:
                 [self._binary_masks, binary_masks], axis=0
             )
 
-        # Might switch to a better solution in the future
         if self.parcels_template_img is None:
-            contrast_search_path = get_contrast_path(
-                subjects[0],
-                task,
-                "*",
-                "*",
-                "p",
+            runs = get_runs(subjects[0], task)
+            ref_img = get_contrast_path(
+                subjects[0], task, runs[0], contrasts[0], "p"
             )
-            contrast_path = glob.glob(contrast_search_path)[0]
-            self.parcels_template_img = Nifti1Image.from_filename(
-                contrast_path
-            )
+            self.parcels_template_img = load_img(ref_img)
 
     def generate(self) -> Nifti1Image:
-        if self._data is None:
+        if self._binary_masks_by_run is None:
             raise ValueError("No subjects added for parcellation")
         overlap_map = np.mean(self._binary_masks, axis=0).reshape(
             self.parcels_template_img.get_fdata().shape
         )
-        if self.use_spm_smooth: # SPM-style smoothing
+        if self.use_spm_smooth:  # SPM-style smoothing
             smoothed_map = self._smooth_array(
                 overlap_map,
                 self.parcels_template_img.affine,
                 self.smoothing_kernel_size,
             )
-        else: # Nilearn-style smoothing
+        else:  # Nilearn-style smoothing
             smoothed_map = smooth_img(
                 Nifti1Image(overlap_map, self.parcels_template_img.affine),
                 fwhm=self.smoothing_kernel_size,
@@ -131,7 +143,7 @@ class ParcelsGenerator:
 
         return Nifti1Image(self.parcels, self.parcels_template_img.affine)
 
-    def select(
+    def filter(
         self,
         min_voxel_size: Optional[int] = 0,
         overlap_thr_roi: Optional[float] = 0,
@@ -163,16 +175,27 @@ class ParcelsGenerator:
             if parcel_size < min_voxel_size:
                 parcels[parcel_mask] = 0
             else:
-                subject_coverage = np.zeros(len(self._data))
-                for subjecti, data in enumerate(self._data):
-                    subject_coverage[subjecti] = harmonic_mean(
-                        np.sum(data[:, parcel_mask.flatten()], axis=1)
-                    ) > 0
+                subject_coverage = np.zeros(len(self._binary_masks_by_run))
+                for subjecti, data in enumerate(self._binary_masks_by_run):
+                    subject_coverage[subjecti] = (
+                        harmonic_mean(
+                            np.sum(data[:, parcel_mask.flatten()], axis=1)
+                        )
+                        > 0
+                    )
                 if np.mean(subject_coverage) < overlap_thr_roi:
                     parcels[parcel_mask] = 0
 
         if inplace:
             self.parcels = parcels
+            self.filtering = {
+                "min_voxel_size": max(
+                    min_voxel_size, self.filtering["min_voxel_size"]
+                ),
+                "overlap_thr_roi": max(
+                    overlap_thr_roi, self.filtering["overlap_thr_roi"]
+                ),
+            }
 
         labels_remaining = np.unique(parcels)
         labels_remaining = labels_remaining[labels_remaining != 0]
@@ -182,10 +205,20 @@ class ParcelsGenerator:
 
     def save(self, parcels_name: str):
         parcels_path = get_parcels_path(parcels_name)
+
+        if os.path.exists(parcels_path):
+            raise ValueError(
+                "Parcellation name already exists! Please use a different name."
+            )
+
+        parcels_folder = get_parcels_folder()
+        if not os.path.exists(parcels_folder):
+            os.makedirs(parcels_folder)
+
         if self.parcels is None:
             raise ValueError("Parcellation not generated yet")
         parcels_img = Nifti1Image(
-            self.parcels, self.parcels_template_img.affine
+            self.parcels.astype(np.float32), self.parcels_template_img.affine
         )
         parcels_img.to_filename(parcels_path)
 
@@ -195,7 +228,9 @@ class ParcelsGenerator:
                 {
                     "smoothing_kernel_size": self.smoothing_kernel_size,
                     "overlap_thr_vox": self.overlap_thr_vox,
-                    "info": self.info,
+                    "info": self.source,
+                    "filtering": self.filtering,
+                    "use_spm_smooth": self.use_spm_smooth,
                 },
                 f,
             )
