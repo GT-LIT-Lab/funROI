@@ -1,287 +1,362 @@
+from typing import List, Optional, Union, Tuple
+from ..utils import validate_arguments
+from ..contrast import _check_orthogonal
+from ..parcels import ParcelsConfig, get_parcels
+from ..froi import FROIConfig, _get_froi_data, _get_orthogonalized_froi_data
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Union
-from ..froi import _get_froi_all, _get_froi_orth, _get_froi_run
-from ..parcels import get_parcels
-from ..contrast import _check_orthogonal
-from ..utils import (
-    FROIConfig,
-    ParcelsConfig,
-    get_overlap_estimation_folder,
-    get_next_overlap_estimation_path,
-)
 import warnings
-import os
+import logging
+from .utils import AnalysisSaver
 
 
-class OverlapEstimator:
+class OverlapEstimator(AnalysisSaver):
+    """
+    Estimate the overlap between two sets of parcels or fROIs.
+
+    :param subjects: List of subject labels.
+    :type subjects: List[str]
+    :param kind: Kind of overlap to estimate. Options are 'overlap' and
+        'dice'. Default is 'overlap'.
+    :type kind: Optional[str]
+    :param orthogonalization: Orthogonalization method to use. Options are
+        'all-but-one' and 'odd-even'. Default is 'all-but-one'.
+    :type orthogonalization: Optional[str]
+    """
+
+    @validate_arguments(orthogonalization={"all-but-one", "odd-even"})
+    @validate_arguments(kind={"overlap", "dice"})
     def __init__(
         self,
-        frois: List[Union[FROIConfig, str, ParcelsConfig]],
         subjects: Optional[List[str]] = None,
         kind: Optional[str] = "overlap",
+        orthogonalization: Optional[str] = "all-but-one",
+    ):
+        self.subjects = subjects
+        self.kind = kind
+        self.orthogonalization = orthogonalization
+
+        self._type = "overlap"
+        self._data_summary = None
+        self._data_detail = None
+
+    def run(
+        self,
+        froi1: Union[FROIConfig, str, ParcelsConfig],
+        froi2: Union[FROIConfig, str, ParcelsConfig],
+        run1: Optional[str] = None,
+        run2: Optional[str] = None,
+        return_results: Optional[bool] = False,
     ):
         """
-        Initialize the fROI overlap analyzer.
-        For now, it is assumed that no duplicate localizer names exist
-        across fROIs. Localizer name are used as identifiers in the output
-        DataFrame, see `compute_overlap`.
+        Run the overlap estimation. The results are stored in the analysis
+        output folder.
 
-        Parameters
-        ----------
-        frois : List[Union[FROI, str, ParcelsConfig]]
-            The fROIs to analyze. Each fROI can be a FROI object, a saved
-            parcels name, or a ParcelsConfig object indicating the parcels
-            and labels paths.
-        subjects : Optional[List[str]]
-            The list of subjects to analyze. It is required if any fROI is a
-            FROI object, by default None.
-        kind : str, optional
-            The kind of overlap to compute. It can be 'dice', or 'overlap', by
-            default 'overlap'.
-            - 'dice' : Dice coefficient: 2 * |A & B| / (|A| + |B|)
-            - 'overlap' : Overlap: |A & B| / min(|A|, |B|)
+        :param froi1: fROI or parcels configuration for the first set of
+            parcels or fROIs.
+        :type froi1: Union[FROIConfig, str, ParcelsConfig]
+        :param froi2: fROI or parcels configuration for the second set of
+            parcels or fROIs.
+        :type froi2: Union[FROIConfig, str, ParcelsConfig]
+        :param run1: Run label for the first set of parcels or fROIs. If not
+            specified, the run is determined by automatic orthogonalization.
+        :type run1: Optional[str]
+        :param run2: Run label for the second set of parcels or fROIs. If not
+            specified, the run is determined by automatic orthogonalization.
+        :type run2: Optional[str]
+        :param return_results: Whether to return the results in addition to
+            saving them. Default is False.
+        :type return_results: Optional[bool]
+
+        :return: If return_results is True, the results are also returned: the
+            overlap estimates averaged across runs, and the overlap estimates
+            detailed by run.
+        :rtype: Optional[Tuple[pd.DataFrame, pd.DataFrame]]
+
+        :raises ValueError: If the parcels are used and the parcels image is
+            not found.
         """
-        self.subjects = subjects
-        self.frois = frois
-        self.kind = kind
+        self.froi1 = froi1
+        self.froi2 = froi2
+        froi1_img, froi1_labels = get_parcels(
+            self.froi1.parcels
+            if isinstance(self.froi1, FROIConfig)
+            else self.froi1
+        )
+        froi2_img, froi2_labels = get_parcels(
+            self.froi2.parcels
+            if isinstance(self.froi2, FROIConfig)
+            else self.froi2
+        )
+        self.run1 = run1
+        self.run2 = run2
 
-        any_froi = any([isinstance(froi, FROIConfig) for froi in frois])
-        if any_froi:
-            if subjects is None:
-                raise ValueError("subjects must be provided for FROI objects")
-        else:
+        is_parcels1 = not isinstance(self.froi1, FROIConfig)
+        if is_parcels1:
+            if froi1_img is None:
+                raise ValueError("Parcels image 1 not found")
+            froi1_data = froi1_img.get_fdata().flatten()[None, :]
+        is_parcels2 = not isinstance(self.froi2, FROIConfig)
+        if is_parcels2:
+            if froi2_img is None:
+                raise ValueError("Parcels image 2 not found")
+            froi2_data = froi2_img.get_fdata().flatten()[None, :]
+
+        if self.subjects is None:
+            if not is_parcels1 or not is_parcels2:
+                raise ValueError(
+                    "Subjects must be specified if fROIs are used"
+                )
             self.subjects = [None]
 
-    def run(self, return_output: Optional[bool] = False) -> pd.DataFrame:
-        """
-        Compute the overlap between fROIs.
-
-        Returns
-        -------
-        overlap : pd.DataFrame, columns=[
-                'subject', 'group1', 'group2', 'froi1', 'froi2', 'overlap'
-            ]
-            The overlap between each pair of fROIs across networks.
-        """
-        overlap_all_subjects = []
+        data_summary = []
+        data_detail = []
         for subject in self.subjects:
-            frois_avail = []
-            frois_data_avail = {"all": [], "orth": [], "run": []}
-            frois_labels_avail = []
-            for froi in self.frois:
-                try:
-                    if isinstance(froi, FROIConfig):
-                        froi_dat = _get_froi_all(subject, froi)
-                        froi_dat_orth = _get_froi_orth(subject, froi)
-                        froi_dat_run = _get_froi_run(subject, froi)
-                        frois_avail.append(froi)
-                        frois_data_avail["all"].append(froi_dat)
-                        frois_data_avail["orth"].append(froi_dat_orth)
-                        frois_data_avail["run"].append(froi_dat_run)
-                        _, parcels_labels = get_parcels(
-                            froi.parcels
-                        )  # TODO: decide whether to backtrack labels from parcels, or save labels with fROI
-                        frois_labels_avail.append(parcels_labels)
-                    else:
-                        parcels_img_all, parcels_labels_all = get_parcels(froi)
-                        frois_avail.append(froi)
-                        frois_data_avail["all"].append(
-                            parcels_img_all.get_fdata().flatten()[None, :]
+            # Load the data
+            if is_parcels1 and is_parcels2:
+                froi1_run_labels, froi2_run_labels = ["parcels"], ["parcels"]
+            elif is_parcels1:
+                froi1_run_labels, froi2_run_labels = ["parcels"], ["all"]
+                froi2_data = _get_froi_data(
+                    subject, self.froi2, "all" if run2 is None else run2
+                )[None, :]
+            elif is_parcels2:
+                froi1_run_labels, froi2_run_labels = ["all"], ["parcels"]
+                froi1_data = _get_froi_data(
+                    subject, self.froi1, "all" if run1 is None else run1
+                )[None, :]
+            else:
+                okorth = _check_orthogonal(
+                    subject,
+                    self.froi1.task,
+                    self.froi1.contrasts,
+                    self.froi2.task,
+                    self.froi2.contrasts,
+                )
+                if self.run1 is not None and self.run2 is not None:
+                    froi1_run_labels, froi2_run_labels = [self.run1], [
+                        self.run2
+                    ]
+                    froi1_data = _get_froi_data(
+                        subject, self.froi1, self.run1
+                    )[None, :]
+                    froi2_data = _get_froi_data(
+                        subject, self.froi2, self.run2
+                    )[None, :]
+                elif okorth:
+                    froi1_run_labels, froi2_run_labels = ["all"], ["all"]
+                    froi1_data = _get_froi_data(subject, self.froi1, "all")[
+                        None, :
+                    ]
+                    froi2_data = _get_froi_data(subject, self.froi2, "all")[
+                        None, :
+                    ]
+                else:
+                    froi1_data, froi1_run_labels = (
+                        _get_orthogonalized_froi_data(
+                            subject, self.froi1, 1, self.orthogonalization
                         )
-                        frois_data_avail["orth"].append(None)
-                        frois_data_avail["run"].append(None)
-                        frois_labels_avail.append(parcels_labels_all)
-                except ValueError:
-                    warnings.warn(
-                        f"Subject {subject} does not have the following fROI, "
-                        f"skipping: {froi}"
                     )
-                    continue
-
-            for i, froi1 in enumerate(frois_avail):
-                for j, froi2 in enumerate(
-                    frois_avail
-                ):  # TODO: overlap is also not symmetric, see the notes in spcorr.py
-                    if not isinstance(froi1, FROIConfig) or not isinstance(
-                        froi2, FROIConfig
-                    ):
-                        okorth = True
-                    else:
-                        okorth = _check_orthogonal(
-                            subject,
-                            froi1.task,
-                            froi1.contrasts,
-                            froi2.task,
-                            froi2.contrasts,
+                    if froi1_data is None:
+                        warnings.warn(
+                            f"Data not found for subject {subject}, fROI "
+                            f"{self.froi1} for the orthogonalization, skipping."
                         )
-                    if okorth:
-                        froi1_data = frois_data_avail["all"][i]
-                        froi2_data = frois_data_avail["all"][j]
-                    else:
-                        froi1_data = frois_data_avail["orth"][i]
-                        froi2_data = frois_data_avail["run"][j]
-
-                    # Trim voxels not labeled in both fROIs
-                    non_zero_1 = np.sum(froi1_data != 0, axis=0) > 0
-                    non_zero_2 = np.sum(froi2_data != 0, axis=0) > 0
-                    non_zero_either = non_zero_1 | non_zero_2
-                    froi1_data = froi1_data[:, non_zero_either]
-                    froi2_data = froi2_data[:, non_zero_either]
-
-                    overlap = self._compute_overlap(
-                        froi1_data, froi2_data, kind=self.kind
+                        continue
+                    froi2_data, froi2_run_labels = (
+                        _get_orthogonalized_froi_data(
+                            subject, self.froi2, 2, self.orthogonalization
+                        )
                     )
-                    overlap_estimates = pd.DataFrame(
-                        {
-                            "subject": [subject] * len(overlap),
-                            "group1": [i] * len(overlap),
-                            "group2": [j] * len(overlap),
-                            "froi1": overlap["froi_id1"].map(
-                                lambda x: frois_labels_avail[i][x]
-                            ),
-                            "froi2": overlap["froi_id2"].map(
-                                lambda x: frois_labels_avail[j][x]
-                            ),
-                            "overlap": overlap["overlap"],
-                        }
-                    )
-                    overlap_all_subjects.append(overlap_estimates)
+                    if froi2_data is None:
+                        warnings.warn(
+                            f"Data not found for subject {subject}, fROI "
+                            f"{self.froi2} for the orthogonalization, skipping."
+                        )
+                        continue
+                    if self.orthogonalization == "all-but-one":
+                        # To resolve the issue of asymmetric orthogonalization
+                        froi1_data2, froi1_run_labels2 = (
+                            _get_orthogonalized_froi_data(
+                                subject, self.froi1, 2, self.orthogonalization
+                            )
+                        )
+                        if froi1_data2 is None:
+                            warnings.warn(
+                                f"Data not found for subject {subject}, fROI "
+                                f"{self.froi1} for the orthogonalization, "
+                                "skipping."
+                            )
+                            continue
+                        froi2_data2, froi2_run_labels2 = (
+                            _get_orthogonalized_froi_data(
+                                subject, self.froi2, 1, self.orthogonalization
+                            )
+                        )
+                        if froi2_data2 is None:
+                            warnings.warn(
+                                f"Data not found for subject {subject}, fROI "
+                                f"{self.froi2} for the orthogonalization, "
+                                "skipping."
+                            )
+                            continue
+                        froi1_data = np.concat([froi1_data, froi1_data2])
+                        froi2_data = np.concat([froi2_data, froi2_data2])
+                        froi1_run_labels = np.concat(
+                            [froi1_run_labels, froi1_run_labels2]
+                        )
+                        froi2_run_labels = np.concat(
+                            [froi2_run_labels, froi2_run_labels2]
+                        )
 
-        overlap_all_subjects = pd.concat(overlap_all_subjects)
+            df_summary, df_detail = self._run(
+                froi1_data, froi2_data, self.kind
+            )
+            if not is_parcels1 or not is_parcels2:
+                df_detail["run1"] = df_detail["run"].apply(
+                    lambda x: froi1_run_labels[x]
+                )
+                df_detail["run2"] = df_detail["run"].apply(
+                    lambda x: froi2_run_labels[x]
+                )
+            df_detail = df_detail.drop(columns=["run"])
+            if froi1_labels is not None:
+                df_summary["froi1"] = df_summary["froi1"].apply(
+                    lambda x: froi1_labels[x]
+                )
+                df_detail["froi1"] = df_detail["froi1"].apply(
+                    lambda x: froi1_labels[x]
+                )
+            if froi2_labels is not None:
+                df_summary["froi2"] = df_summary["froi2"].apply(
+                    lambda x: froi2_labels[x]
+                )
+                df_detail["froi2"] = df_detail["froi2"].apply(
+                    lambda x: froi2_labels[x]
+                )
+            if is_parcels1:
+                df_summary = df_summary.rename(columns={"froi1": "parcel1"})
+                df_detail = df_detail.rename(columns={"froi1": "parcel1"})
+            if is_parcels2:
+                df_summary = df_summary.rename(columns={"froi2": "parcel2"})
+                df_detail = df_detail.rename(columns={"froi2": "parcel2"})
+            if not is_parcels1 or not is_parcels2:
+                df_summary["subject"] = subject
+                df_detail["subject"] = subject
+            data_summary.append(df_summary)
+            data_detail.append(df_detail)
 
-        # Form a dataframe for available fROIs
-        frois_avail_df = pd.DataFrame(
+        # Save and return the results
+        self._data_summary = pd.concat(data_summary)
+        self._data_detail = pd.concat(data_detail)
+        new_overlap_info = pd.DataFrame(
             {
-                "group": list(range(len(frois_avail))),
-                "task": [
-                    froi.task if isinstance(froi, FROIConfig) else None
-                    for froi in frois_avail
-                ],
-                "contrasts": [
-                    froi.contrasts if isinstance(froi, FROIConfig) else None
-                    for froi in frois_avail
-                ],
-                "conjunction_type": [
-                    (
-                        froi.conjunction_type
-                        if isinstance(froi, FROIConfig)
-                        else None
-                    )
-                    for froi in frois_avail
-                ],
-                "threshold_type": [
-                    (
-                        froi.threshold_type
-                        if isinstance(froi, FROIConfig)
-                        else None
-                    )
-                    for froi in frois_avail
-                ],
-                "threshold_value": [
-                    (
-                        froi.threshold_value
-                        if isinstance(froi, FROIConfig)
-                        else None
-                    )
-                    for froi in frois_avail
-                ],
-                "parcels": [
-                    froi.parcels if isinstance(froi, FROIConfig) else froi
-                    for froi in frois_avail
-                ],
+                "froi1": [self.froi1],
+                "froi2": [self.froi2],
+                "kind": [self.kind],
+                "orthogonalization": [self.orthogonalization],
+                "customized_run1": [self.run1],
+                "customized_run2": [self.run2],
             }
         )
+        self._save(new_overlap_info)
+        if return_results:
+            return self._data_summary, self._data_detail
 
-        overlap_folder = get_overlap_estimation_folder()
-        if not os.path.exists(overlap_folder):
-            os.makedirs(overlap_folder)
-
-        overlap_path, config_path = get_next_overlap_estimation_path()
-        overlap_all_subjects.to_csv(overlap_path, index=False)
-        frois_avail_df.to_csv(config_path, index=False)
-
-        if return_output:
-            return overlap_all_subjects, frois_avail_df
-
-    @classmethod
-    def _compute_overlap(
-        cls,
-        froi_masks1: np.ndarray,
-        froi_masks2: np.ndarray,
-        kind: Optional[str] = "overlap",
-    ) -> pd.DataFrame:
+    @staticmethod
+    def _run(
+        froi1_masks: np.ndarray, froi2_masks: np.ndarray, kind: str
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Compute the overlap between fROIs.
+        Run the overlap estimation.
 
-        Parameters
-        ----------
-        froi_masks1 : np.ndarray, shape (n_runs, n_voxels)
-            The fROI data, coded by numerical labels (0 for background).
-        froi_masks2 : np.ndarray, shape (n_runs, n_voxels)
-            The fROI data, coded by numerical labels (0 for background).
-        kind : str, optional
-            The kind of overlap to compute. It can be 'dice', or 'overlap', by
-            default 'overlap'.
-            - 'dice' : Dice coefficient: 2 * |A & B| / (|A| + |B|)
-            - 'overlap' : Overlap: |A & B| / min(|A|, |B|)
+        :param froi1_masks: The fROI masks for the first set of parcels or
+            fROIs, with shape (n_runs, n_voxels).
+        :type froi1_masks: np.ndarray
+        :param froi2_masks: The fROI masks for the second set of parcels or
+            fROIs, with shape (n_runs, n_voxels).
+        :type froi2_masks: np.ndarray
+        :param kind: Kind of overlap to estimate. Options are 'overlap' and
+            'dice'.
+        :type kind: str
 
-        Returns
-        -------
-        overlap : pd.DataFrame, columns=['froi_id1', 'froi_id2', 'overlap']
-            The overlap between each pair of fROIs across the masks.
+        :return: The overlap estimates averaged across runs, and the overlap
+            estimates detailed by run.
+        :rtype: Tuple[pd.DataFrame, pd.DataFrame]
         """
-        assert kind in [
-            "dice",
-            "overlap",
-        ], "kind should be 'dice' or 'overlap'"
-        froi_masks1[np.isnan(froi_masks1)] = 0
-        froi_masks2[np.isnan(froi_masks2)] = 0
-
-        labels_i = np.unique(froi_masks1)
-        labels_i = labels_i[labels_i != 0]
-        labels_j = np.unique(froi_masks2)
-        labels_j = labels_j[labels_j != 0]
-        overlap_results = []  # "froi_id1", "froi_id2", "overlap"
-        for label_i in labels_i:
-            froi_masks2_on_label_i = froi_masks2 * (froi_masks1 == label_i)
-            count_ij = []
-            for label_j in labels_j:
-                count_ij.append(np.sum(froi_masks2_on_label_i == label_j))
-            overlap_results.append(
-                {
-                    "froi_id1": [label_i] * len(labels_j),
-                    "froi_id2": labels_j,
-                    "overlap_n": count_ij,
-                }
+        if len(froi1_masks.shape) != 2:
+            raise ValueError("froi1_masks must have shape (n_runs, n_voxels)")
+        if len(froi2_masks.shape) != 2:
+            raise ValueError("froi2_masks must have shape (n_runs, n_voxels)")
+        if froi1_masks.shape != froi2_masks.shape:
+            raise ValueError(
+                "froi1_masks and froi2_masks must have the same shape"
             )
-        overlap_results = pd.concat(
-            [
-                pd.DataFrame(overlap_result)
-                for overlap_result in overlap_results
-            ]
-        )
 
-        label_i_stats = {
-            label_i: np.sum(froi_masks1 == label_i) for label_i in labels_i
-        }
-        overlap_results["n1"] = overlap_results["froi_id1"].apply(
-            lambda x: label_i_stats[x]
+        # Reduce the data
+        valid_idx1 = np.any(
+            ~np.isnan(froi1_masks) & (froi1_masks != 0), axis=0
         )
-        label_j_stats = {
-            label_j: np.sum(froi_masks2 == label_j) for label_j in labels_j
-        }
-        overlap_results["n2"] = overlap_results["froi_id2"].apply(
-            lambda x: label_j_stats[x]
+        valid_idx2 = np.any(
+            ~np.isnan(froi2_masks) & (froi2_masks != 0), axis=0
         )
+        any_valid_idx = valid_idx1 | valid_idx2
+        froi1_masks = froi1_masks[:, any_valid_idx]
+        froi2_masks = froi2_masks[:, any_valid_idx]
+
+        froi1_masks_expanded = froi1_masks[None, ...]
+        froi1_labels = np.unique(froi1_masks)
+        froi1_labels = froi1_labels[
+            ~np.isnan(froi1_labels) & (froi1_labels != 0)
+        ]
+        froi1_masks_expanded = (
+            froi1_masks_expanded == froi1_labels[:, None, None]
+        ).astype(int)
+
+        froi2_masks_expanded = froi2_masks[None, ...]
+        froi2_labels = np.unique(froi2_masks)
+        froi2_labels = froi2_labels[
+            ~np.isnan(froi2_labels) & (froi2_labels != 0)
+        ]
+        froi2_masks_expanded = (
+            froi2_masks_expanded == froi2_labels[:, None, None]
+        ).astype(int)
+
+        # Compute intersection
+        intersection = np.einsum(
+            "mrv, nrv -> mnr", froi1_masks_expanded, froi2_masks_expanded
+        )
+        froi1_sum = np.einsum("mrv -> mr", froi1_masks_expanded)[:, None, :]
+        froi2_sum = np.einsum("nrv -> nr", froi2_masks_expanded)[None, :, :]
+        min_sum = np.minimum(froi1_sum, froi2_sum)
 
         if kind == "dice":
-            overlap_results["overlap"] = (2 * overlap_results["overlap_n"]) / (
-                overlap_results["n1"] + overlap_results["n2"]
-            )
-        elif kind == "overlap":
-            overlap_results["overlap"] = overlap_results[
-                "overlap_n"
-            ] / np.minimum(overlap_results["n1"], overlap_results["n2"])
+            overlap = 2 * intersection / (froi1_sum + froi2_sum)
+        else:
+            overlap = intersection / min_sum
 
-        return overlap_results
+        df_detail = pd.DataFrame(
+            {  # run, froi1, froi2, overlap
+                "run": np.tile(
+                    np.arange(froi1_masks.shape[0]),
+                    len(froi1_labels) * len(froi2_labels),
+                ),
+                "froi1": np.repeat(
+                    froi1_labels, froi1_masks.shape[0] * len(froi2_labels)
+                ),
+                "froi2": np.repeat(
+                    np.tile(froi2_labels, len(froi1_labels)),
+                    froi2_masks.shape[0],
+                ),
+                "overlap": overlap.flatten(),
+            }
+        )
+        df_detail = df_detail.sort_values(
+            by=["run", "froi1", "froi2"]
+        ).reset_index(drop=True)
+        df_summary = (
+            df_detail.groupby(["froi1", "froi2"])
+            .agg({"overlap": "mean"})
+            .reset_index()
+        )
+        return df_summary, df_detail

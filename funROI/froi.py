@@ -1,235 +1,403 @@
 import os
-from .utils import get_froi_path, get_runs, get_subject_froi_folder, FROIConfig
-from .parcels import get_parcels
-from .contrast import (
-    _get_contrast_all,
-    _get_contrast_orth,
-    _get_contrast_run,
-    _create_p_map_mask,
+from .parcels import get_parcels, ParcelsConfig
+from .utils import (
+    validate_arguments,
+    _get_orthogonalized_run_labels,
 )
-from typing import Optional
+from . import get_bids_deriv_folder
+from .contrast import (
+    _get_contrast_data,
+    _get_orthogonalized_contrast_data,
+    _get_contrast_runs,
+    _get_contrast_runs_by_group,
+    _get_contrast_path,
+)
+from typing import Optional, List, Union, Tuple
 from nibabel.nifti1 import Nifti1Image
 import numpy as np
 from nilearn.image import load_img, new_img_like
+from collections import namedtuple
+import pandas as pd
+from statsmodels.stats.multitest import fdrcorrection
+import logging
 
 
-FROIConfig.__new__.__defaults__ = FROIConfig(
-    task="",
-    contrasts=[],
-    conjunction_type="and",
-    threshold_type="none",
-    threshold_value=None,
-    parcels=None,
+class FROIConfig(dict):
+    @validate_arguments(
+        threshold_type={"none", "bonferroni", "fdr", "n", "percent"},
+        conjunction_type={"min", "max", "sum", "prod", "and", "or", None},
+    )
+    def __init__(
+        self,
+        task: str,
+        contrasts: List[str],
+        threshold_type: str,
+        threshold_value: float,
+        parcels: Union[str, ParcelsConfig],
+        conjunction_type: Optional[str] = None,
+    ):
+        if threshold_value < 0:
+            raise ValueError("Threshold value must be non-negative.")
+        self.task = task
+        self.contrasts = contrasts
+        self.conjunction_type = conjunction_type
+        self.threshold_type = threshold_type
+        self.threshold_value = threshold_value
+
+        if not isinstance(parcels, ParcelsConfig):
+            parcels = ParcelsConfig(parcels)
+        self.parcels = parcels
+
+        dict.__init__(
+            self,
+            task=task,
+            contrasts=contrasts,
+            conjunction_type=conjunction_type,
+            threshold_type=threshold_type,
+            threshold_value=threshold_value,
+            parcels=parcels,
+        )
+
+    def __repr__(self):
+        return (
+            f"FROIConfig(task={self.task}, "
+            f"contrasts={self.contrasts}, "
+            f"conjunction_type={self.conjunction_type}, "
+            f"threshold_type={self.threshold_type}, "
+            f"threshold_value={self.threshold_value}, "
+            f"parcels={self.parcels})"
+        )
+
+    def __eq__(self, other):
+        return isinstance(other, FROIConfig) and (
+            self.task == other.task
+            and self.contrasts == other.contrasts
+            and self.conjunction_type == other.conjunction_type
+            and self.threshold_type == other.threshold_type
+            and self.threshold_value == other.threshold_value
+            and self.parcels == other.parcels
+        )
+
+
+_get_subject_froi_folder = lambda subject, task: (
+    get_bids_deriv_folder() / f"first_level_{task}" / f"sub-{subject}" / "froi"
+)
+_get_froi_info_path = lambda subject, task: (
+    _get_subject_froi_folder(subject, task)
+    / f"sub-{subject}_task-{task}_frois.csv"
 )
 
 
-def _get_froi_all(subject: str, froi: FROIConfig) -> np.ndarray:
-    """
-    Get the all-run froi maps.
-    Returns the froi maps, shape (1, n_voxels).
-    """
-    os.makedirs(get_subject_froi_folder(subject, froi.task), exist_ok=True)
-    froi_path = get_froi_path(
-        subject,
-        froi.task,
-        "all",
-        froi.contrasts,
-        froi.conjunction_type,
-        froi.threshold_type,
-        froi.threshold_value,
-        froi.parcels,
-        create=True,
-    )
-    if os.path.exists(froi_path):
-        img = load_img(froi_path)
-        return img.get_fdata().flatten()[np.newaxis, :]
-
-    parcels_img, _ = get_parcels(froi.parcels)
-    assert parcels_img is not None, "Parcels image not found."
-
-    p_maps = []
-    for contrast in froi.contrasts:
-        p_maps.append(_get_contrast_all(subject, froi.task, contrast, "p"))
-    p_maps = np.stack(p_maps, axis=0)
-
-    parcels_data = parcels_img.get_fdata()
-    froi_mask = _generate_froi_mask(
-        p_maps,
-        parcels_data.flatten(),
-        froi.conjunction_type,
-        froi.threshold_type,
-        froi.threshold_value,
-    )
-
-    # save the fROI mask
-    froi_img = new_img_like(
-        parcels_img,
-        froi_mask[0].reshape(parcels_data.shape).astype(np.float32),
-    )
-    froi_img.to_filename(froi_path)
-
-    return froi_mask
-
-
-def _get_froi_orth(subject: str, froi: FROIConfig) -> np.ndarray:
-    """
-    Get the orthogonal-run froi maps.
-    Returns the froi maps, shape (n_runs, n_voxels).
-    """
-    return _get_froi_run(subject, froi, orthogonal=True)
-
-
-def _get_froi_run(
+def _get_froi_path(
     subject: str,
-    froi: FROIConfig,
-    orthogonal: Optional[bool] = False,
-) -> np.ndarray:
+    run_label: str,
+    config: FROIConfig,
+    create: Optional[bool] = False,
+) -> str:
+    (
+        task,
+        contrasts,
+        conjunction_type,
+        threshold_type,
+        threshold_value,
+        parcels,
+    ) = (
+        config.task,
+        config.contrasts,
+        config.conjunction_type,
+        config.threshold_type,
+        config.threshold_value,
+        config.parcels,
+    )
+
+    if not isinstance(parcels, ParcelsConfig):
+        parcels = ParcelsConfig(parcels)
+    contrasts = str(sorted(contrasts))
+
+    frois_new = pd.DataFrame(
+        {
+            "contrasts": [contrasts],
+            "conjunction_type": [conjunction_type],
+            "threshold_type": [threshold_type],
+            "threshold_value": [threshold_value],
+            "parcels": [parcels.parcels_path],
+            "labels": [parcels.labels_path],
+        }
+    )
+
+    info_path = _get_froi_info_path(subject, task)
+    if not info_path.exists():
+        id = 0
+        if create:
+            _get_subject_froi_folder(subject, task).mkdir(
+                parents=True, exist_ok=True
+            )
+            frois_new["id"] = 0
+            frois_new.to_csv(info_path, index=False)
+    else:
+        frois = pd.read_csv(info_path)
+        frois_matched = frois[
+            (frois["contrasts"] == contrasts)
+            & (
+                (frois["conjunction_type"] == conjunction_type)
+                | (
+                    frois["conjunction_type"].isna()
+                    & (conjunction_type is None)
+                )
+            )
+            & (frois["threshold_type"] == threshold_type)
+            & (frois["threshold_value"] == threshold_value)
+            & (
+                (frois["parcels"] == str(parcels.parcels_path))
+                | (frois["parcels"].isna() & (parcels.parcels_path is None))
+            )
+            & (
+                (frois["labels"] == parcels.labels_path)
+                | (frois["labels"].isna() & (parcels.labels_path is None))
+            )
+        ]
+        if len(frois_matched) == 0:
+            id = frois["id"].max() + 1
+            if create:
+                frois_new["id"] = id
+                frois = pd.concat([frois, frois_new], ignore_index=True)
+                frois.to_csv(info_path, index=False)
+        else:
+            id = frois_matched["id"].values[0]
+
+    id = f"{id:04d}"
+    return (
+        _get_subject_froi_folder(subject, task)
+        / f"sub-{subject}_task_{task}_run-{run_label}_froi-{id}_mask.nii.gz"
+    )
+
+
+def _get_froi_runs(subject: str, config: FROIConfig):
+    runs = None
+    for contrast in config.contrasts:
+        runs_i = _get_contrast_runs(subject, config.task, contrast)
+        if runs is None:
+            runs = runs_i
+        else:
+            runs = list(set(runs) & set(runs_i))
+    return sorted(runs)
+
+
+@validate_arguments(
+    group={1, 2}, orthogonalization={"all-but-one", "odd-even"}
+)
+def _get_orthogonalized_froi_data(
+    subject: str,
+    config: FROIConfig,
+    group: int,
+    orthogonalization: Optional[str] = "all-but-one",
+) -> Tuple[np.ndarray, List[str]]:
     """
-    Get the orthogonal-run froi maps.
-    Returns the froi maps, shape (n_runs, n_voxels).
+    Get the orthogonalized froi data.
+
+    :return: The froi masks, shape (n_runs, n_voxels) and the run labels.
+        If any of the froi masks is not found, return None, None.
+    :rtype: Tuple[np.ndarray, List[str]]
     """
-    os.makedirs(get_subject_froi_folder(subject, froi.task), exist_ok=True)
-    runs = get_runs(subject, froi.task)
+    runs = _get_froi_runs(subject, config)
+    if len(runs) == 0:
+        return None, None
+    labels = _get_orthogonalized_run_labels(runs, group, orthogonalization)
 
     data = []
-    for run in runs:
-        file_path = get_froi_path(
-            subject,
-            froi.task,
-            run if not orthogonal else f"orth{run}",
-            froi.contrasts,
-            froi.conjunction_type,
-            froi.threshold_type,
-            froi.threshold_value,
-            froi.parcels,
-            create=True,
+    for label in labels:
+        froi_data = _get_froi_data(subject, config, label)
+        if froi_data is None:
+            froi_data = _create_froi(subject, config, label)
+            if froi_data is None:
+                return None, None
+        data.append(froi_data.flatten())
+    return np.array(data), labels
+
+
+def _get_froi_data(
+    subject: str, config: FROIConfig, run_label: str
+) -> np.ndarray:
+    """
+    Get the froi data by run label.
+
+    :return: The froi mask, shape (n_voxels,). If the froi mask is not
+        found, return None.
+    :rtype: np.ndarray
+    """
+    froi_path = _get_froi_path(subject, run_label, config)
+    if not froi_path.exists():
+        data = _create_froi(subject, config, run_label)
+        if data is None:
+            return None
+        return data
+    return load_img(froi_path).get_fdata().flatten()
+
+
+def _create_froi(
+    subject: str, config: FROIConfig, run_label: str
+) -> np.ndarray:
+    """
+    Create and save a fROI mask. The fROI labels are based on the parcels.
+    Numeric labels not included in the label dictionary are not included, if
+    an external label file is provided.
+
+    :return: The froi mask, shape (n_voxels,). If any contrast data
+        is not found, return None.
+    :rtype: np.ndarray
+    """
+    parcels_img, parcel_labels = get_parcels(config.parcels)
+    parcels_ref = None
+
+    data = []
+    for contrast in config.contrasts:
+        data_i = _get_contrast_data(
+            subject, config.task, run_label, contrast, "p"
         )
-        if not os.path.exists(file_path):
-            # If any of the froi masks are missing, redo the process
-            data = []
-            break
-        img = load_img(file_path)
-        data.append(img.get_fdata().flatten())
-
-    if data:
-        return np.stack(data, axis=0)
-
-    parcels_img, _ = get_parcels(froi.parcels)
-    if parcels_img is None:
-        raise ValueError("Parcels image not found.")
-
-    if orthogonal:
-        p_maps = []
-        for contrast in froi.contrasts:
-            p_maps.append(
-                _get_contrast_orth(subject, froi.task, contrast, "p")
+        if data_i is None:
+            return None
+        if parcels_img is None and parcels_ref is None:
+            contrast_pth = _get_contrast_path(
+                subject, config.task, run_label, contrast, "p"
             )
-        p_maps = np.stack(p_maps, axis=0)
+            parcels_ref = load_img(contrast_pth)
+        data.append(data_i[None, ...])
+    data = np.array(data)
+
+    if parcels_ref is None:  # real parcels in use
+        froi_mask = np.zeros_like(parcels_img.get_fdata().flatten())
+        for label in parcel_labels.keys():
+            froi_mask_i = (
+                _create_p_map_mask(
+                    data,
+                    config.conjunction_type,
+                    config.threshold_type,
+                    config.threshold_value,
+                    parcels_img.get_fdata().flatten() == label,
+                )
+                .squeeze()
+                .astype(bool)
+            )
+            froi_mask[froi_mask_i] = label
     else:
-        p_maps = []
-        for contrast in froi.contrasts:
-            p_maps.append(_get_contrast_run(subject, froi.task, contrast, "p"))
-        p_maps = np.stack(p_maps, axis=0)
-    parcels_data = parcels_img.get_fdata()
-    froi_mask = _generate_froi_mask(
-        p_maps,
-        parcels_data.flatten(),
-        froi.conjunction_type,
-        froi.threshold_type,
-        froi.threshold_value,
-    )
-
-    # save the fROI mask
-    for run_i, run in enumerate(runs):
-        froi_path = get_froi_path(
-            subject,
-            froi.task,
-            run if not orthogonal else f"orth{run}",
-            froi.contrasts,
-            froi.conjunction_type,
-            froi.threshold_type,
-            froi.threshold_value,
-            froi.parcels,
-            create=True,
+        froi_mask = _create_p_map_mask(
+            data,
+            config.conjunction_type,
+            config.threshold_type,
+            config.threshold_value,
         )
-        froi_img = new_img_like(
-            parcels_img,
-            froi_mask[run_i].reshape(parcels_data.shape).astype(np.float32),
-        )
-        froi_img.to_filename(froi_path)
+        parcels_img = parcels_ref
 
+    froi_path = _get_froi_path(subject, run_label, config, create=True)
+    froi_path.parent.mkdir(parents=True, exist_ok=True)
+    froi_img = new_img_like(parcels_img, froi_mask.reshape(parcels_img.shape))
+    froi_img.to_filename(froi_path)
+
+    return froi_mask.flatten()
+
+
+@validate_arguments(
+    threshold_type={"n", "percent", "fdr", "bonferroni", "none"},
+)
+def _threshold_p_map(
+    data: np.ndarray, threshold_type: str, threshold_value: float
+) -> np.ndarray:
+    """
+    Extract voxels from a p-map image based on a threshold. p-value correction
+    is applied along the voxel dimension.
+
+    :param data: The p-map data, shape (n_runs, n_voxels).
+    :type data: np.ndarray
+    :param threshold_type: The threshold type.
+        Options are 'n', 'percent', 'fdr', 'bonferroni', or 'none'.
+    :type threshold_type: str
+    :param threshold_value: The threshold value.
+    :type threshold_value: float
+
+    :return: The froi mask, shape (n_runs, n_voxels).
+    :rtype: np.ndarray
+    """
+    data = np.moveaxis(data, -1, 0)
+    froi_mask = np.zeros_like(data)
+
+    if threshold_type == "n":
+        pvals_sorted = np.sort(data, axis=0)
+        threshold = pvals_sorted[threshold_value - 1]
+        froi_mask[data <= threshold] = 1
+
+    # All-tie-inclusive thresholding
+    elif "percent" in threshold_type:
+        pvals_sorted = np.sort(data, axis=0)
+        n = np.floor(
+            threshold_value * np.sum(~np.isnan(data), axis=0, keepdims=True)
+        ).astype(int)
+        threshold = np.take_along_axis(pvals_sorted, n - 1, axis=0)
+        froi_mask[data <= threshold] = 1
+    elif threshold_type == "fdr":
+        for i in range(data.shape[-1]):
+            pvals = data[:, i]
+            mask = fdrcorrection(pvals, alpha=threshold_value)[0]
+            froi_mask[:, i] = mask
+    elif threshold_type == "bonferroni":
+        froi_mask.flat[data.flatten() < threshold_value / data.shape[-1]] = 1
+    else:
+        froi_mask.flat[data.flatten() < threshold_value] = 1
+
+    froi_mask = np.moveaxis(froi_mask, 0, -1)
     return froi_mask
 
 
-def _generate_froi_mask(
-    p_maps: np.ndarray,
-    parcels: np.ndarray,
+@validate_arguments(
+    conjunction_type={"min", "max", "sum", "prod", "and", "or", None},
+    threshold_type={"n", "percent", "fdr", "bonferroni", "none"},
+)
+def _create_p_map_mask(
+    data: np.ndarray,
     conjunction_type: str,
     threshold_type: str,
     threshold_value: float,
+    mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Generate the binary activation mask using p maps.
+    Create a mask based on a p-map data.
 
-    Parameters
-    ----------
-    p_maps : np.ndarray, shape (n_contrast, n_runs, n_voxels)
-        The p-map data.
-    parcels : np.ndarray, shape (n_voxels)
-        The parcel data.
-    conjunction_type : str
-        The conjunction type.
+    :param data: The p-map data, shape (n_contrast, n_runs, n_voxels).
+    :type data: np.ndarray
+    :param conjunction_type: The conjunction type.
         Options are 'min', 'max', 'sum', 'prod', 'and', or 'or'.
-    threshold_type : str
-        The threshold type.
+    :type conjunction_type: str
+    :param threshold_type: The threshold type.
         Options are 'n', 'percent', 'fdr', 'bonferroni', or 'none'.
-    threshold_value : float
-        The threshold value. If p-value thresholding is used, the threshold
-        value corresponds to the alpha level.
+    :type threshold_type: str
+    :param threshold_value: The threshold value.
+    :type threshold_value: float
+    :param mask: The explicit mask to be applied before thresholding.
+    :type mask: np.ndarray, shape (n_voxels), optional
 
-    Returns
-    -------
-    froi_mask : np.ndarray, shape (n_runs, n_voxels)
-        The fROI masks.
+    :return: The froi masks, shape (n_runs, n_voxels).
+    :rtype: np.ndarray
     """
     assert (
-        len(p_maps.shape) == 3
-    ), "p_maps should have shape (n_contrast, n_runs, n_voxels)"
-    assert len(parcels.shape) == 1, "parcels should have shape (n_voxels)"
+        data.ndim == 3
+    ), "data should have shape (n_contrast, n_runs, n_voxels)"
 
-    parcels = np.round(parcels).astype(int)
-    labels = np.unique(parcels)
-    labels = labels[(labels != 0) & (~np.isnan(labels))]
+    if mask is not None:
+        data = data.astype(float)
+        data[np.isnan(data)] = np.inf
+        data[:, :, mask == 0] = np.nan
 
-    # Expand parcel labels to a new axis
-    parcels_expanded = (parcels == labels[:, None]).astype(float)
-    parcels_expanded[parcels_expanded == 0] = np.nan
-
-    p_maps_expanded = (
-        p_maps[np.newaxis, :, :, :]
-        * parcels_expanded[:, np.newaxis, np.newaxis, :]
-    )  # n_labels x n_contrast x n_runs x n_voxels
-
-    # in mask, NaN p_maps are set to inf
-    p_maps_expanded[
-        (np.isnan(p_maps_expanded))
-        & (~np.isnan(parcels_expanded[:, np.newaxis, np.newaxis, :]))
-    ] = np.inf
-
-    froi_mask = []
-    for i in range(p_maps_expanded.shape[0]):
-        froi_mask.append(
-            _create_p_map_mask(
-                p_maps_expanded[i],
-                conjunction_type,
-                threshold_type,
-                threshold_value,
-            )
+    if conjunction_type in ["min", "max", "sum", "prod"]:
+        combined_data = eval(f"np.{conjunction_type}(data, axis=-3)")
+        froi_mask = _threshold_p_map(
+            combined_data, threshold_type, threshold_value
         )
-    froi_mask = np.stack(froi_mask, axis=0)
-
-    # Put labels back as values
-    froi_mask_argmax = np.argmax(froi_mask, axis=0)
-    froi_mask = labels[froi_mask_argmax] * (np.sum(froi_mask, axis=0) != 0)
+    else:
+        thresholded_data = _threshold_p_map(
+            data, threshold_type, threshold_value
+        )
+        if conjunction_type == "and":
+            froi_mask = np.all(thresholded_data, axis=-3)
+        else:
+            froi_mask = np.any(thresholded_data, axis=-3)
 
     return froi_mask

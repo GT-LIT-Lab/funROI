@@ -1,5 +1,13 @@
-from .parcels_generator import ParcelsGenerator
-from .effect_estimator import FROIEffectEstimator
+from .parcels_gen import ParcelsGenerator
+from .froi_gen import FROIGenerator
+from .effect import EffectEstimator
 from .spcorr import SpatialCorrelationEstimator
 from .overlap import OverlapEstimator
-from .froi_generator import FROIGenerator
+
+__all__ = [
+    "ParcelsGenerator",
+    "FROIGenerator",
+    "EffectEstimator",
+    "SpatialCorrelationEstimator",
+    "OverlapEstimator",
+]

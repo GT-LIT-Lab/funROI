@@ -1,79 +1,89 @@
-from .. import (
-    get_bids_data_folder,
-    get_bids_deriv_folder,
-    get_bids_preprocessed_folder,
-    get_bids_preprocessed_folder_relative,
-)
-
-from ..utils import (
-    get_subject_model_folder,
-    get_subject_contrast_folder,
-    get_contrast_path,
-    get_dof_path,
-    get_contrast_info_path,
-    get_design_matrix_path,
-    get_runs,
-    get_design_matrix,
-)
-
-from ..contrast import register_contrast
-
+from typing import List, Optional, Union, Tuple
 import os
-import pickle
-from typing import List, Optional, Union
-from nilearn.image import new_img_like, load_img
-from nilearn.glm import (
-    compute_contrast,
-    SimpleRegressionResults,
-    expression_to_contrast_vector,
+import numpy as np
+import pandas as pd
+import re
+from nilearn.interfaces.bids import get_bids_files
+from nibabel.nifti1 import Nifti1Image
+from .. import (
+    get_bids_deriv_folder,
+    get_bids_data_folder,
+    get_bids_preprocessed_folder_relative,
+    get_bids_preprocessed_folder,
 )
 from nilearn.glm.first_level import (
     first_level_from_bids,
     make_first_level_design_matrix,
     run_glm,
 )
-from nibabel.nifti1 import Nifti1Image
-from nilearn.interfaces.bids import get_bids_files
-import numpy as np
-import pandas as pd
-import re
+from nilearn.glm import (
+    compute_contrast,
+    SimpleRegressionResults,
+    expression_to_contrast_vector,
+)
+from ..contrast import (
+    _get_contrast_folder,
+    _get_design_matrix_path,
+    _get_contrast_path,
+    _get_design_matrix,
+    _get_contrast_runs,
+    _get_contrast_info_path,
+)
+from nilearn.image import load_img, new_img_like
+import pickle
+from .utils import _register_contrast
 
 
-#### Nilearn first level
+_get_model_folder = lambda subject, task: (
+    get_bids_deriv_folder()
+    / f"first_level_{task}"
+    / f"sub-{subject}"
+    / "models"
+)
+
+_get_model_labels_path = lambda subject, task: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_model-labels.pkl"
+)
+_get_model_estimates_path = lambda subject, task: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_model-estimates.pkl"
+)
+
+
 def run_first_level(
     subjects: List[str],
     tasks: List[str],
     space: str,
-    res: Optional[int] = None,
+    data_filter: Optional[dict] = {},
     confound_labels: Optional[List[str]] = [],
-    **args,
+    design_matrix_args: Optional[dict] = {},
+    other_contrasts: Optional[List[str]] = [],
 ):
     """
-    Run first level analysis on BIDS preprocessed data.
+    Run first-level analysis for a list of subjects.
 
-    Parameters
-    ----------
-    subjects : list of str
-        List of subject labels.
-    tasks : list of str
-        List of task labels.
-    space : str
-        Space of the images.
-    res : int, optional
-        Resolution of the images.
-    confound_labels : list of str, optional
-        List of confound labels to include in the design matrix.
-    **args
-        Additional arguments to pass to make_first_level_design_matrix.
+    :param subjects: List of subject labels.
+    :type subjects: List[str]
+    :param tasks: List of task labels.
+    :type tasks: List[str]
+    :param space: The space name of the data.
+    :type space: str
+    :param data_filter: Additional data filter, e.g. the resolution associated
+        with the space.
+    :type data_filter: Optional[dict]
+    :param confound_labels: List of confound labels.
+    :type confound_labels: Optional[List[str]]
+    :param design_matrix_args: Design matrix arguments to be passed to the
+        Nilearn `make_first_level_design_matrix` function.
+    :type design_matrix_args: Optional[dict]
+    :param other_contrasts: List of contrast definitions. Each contrast is a
+        string that defines the contrast formula.
+    :type other_contrasts: Optional[List[str]]
     """
     os.makedirs(get_bids_deriv_folder(), exist_ok=True)
     dofs = {}
     for task in tasks:
-        # TODO: If more are added, change the input to get a filter dict
-        img_filters = []
-        if res is not None:
-            img_filters.append(("res", str(res)))
-
         (models, models_run_imgs, models_events, models_confounds) = (
             first_level_from_bids(
                 get_bids_data_folder(),
@@ -81,11 +91,10 @@ def run_first_level(
                 sub_labels=subjects,
                 space_label=space,
                 derivatives_folder=get_bids_preprocessed_folder_relative(),
-                img_filters=img_filters,
+                img_filters=data_filter,
                 slice_time_ref=None,
             )
         )
-
         for subject_i in range(len(models)):
             model, imgs, events, confounds = (
                 models[subject_i],
@@ -93,14 +102,18 @@ def run_first_level(
                 models_events[subject_i],
                 models_confounds[subject_i],
             )
-            subject_label = model.subject_label
+            subject = model.subject_label
             os.makedirs(
-                get_subject_model_folder(subject_label, task), exist_ok=True
+                _get_model_folder(subject, task),
+                exist_ok=True,
             )
             os.makedirs(
-                get_subject_contrast_folder(subject_label, task), exist_ok=True
+                _get_contrast_folder(subject, task),
+                exist_ok=True,
             )
 
+            design_matrices = []
+            data = []
             for run_i in range(len(events)):
                 events_i = events[run_i]
                 imgs_i = load_img(imgs[run_i])
@@ -110,9 +123,10 @@ def run_first_level(
                         frame_times + model.slice_time_ref * model.t_r
                     )
                 design_matrix = make_first_level_design_matrix(
-                    frame_times=frame_times, events=events_i, **args
+                    frame_times=frame_times,
+                    events=events_i,
+                    **design_matrix_args,
                 )
-
                 # Add confounds to design matrix
                 confounds_i = confounds[run_i]
                 for confound_label in confound_labels:
@@ -122,6 +136,14 @@ def run_first_level(
                         np.isnan(confound), np.nanmean(confound), confound
                     )
                     design_matrix[confound_label] = confound
+
+                # Change column with prefix 'run_{i}
+                orig_cols = design_matrix.columns
+                design_matrix.columns = [
+                    f"run_{run_i}_{col}" for col in design_matrix.columns
+                ]
+
+                design_matrices.append(design_matrix)
 
                 ses_label = re.search(r"ses-(\w+)_", imgs[run_i]).group(1)
                 task_label = re.search(r"task-(\w+)_", imgs[run_i]).group(1)
@@ -133,13 +155,12 @@ def run_first_level(
                     ("space", space),
                     ("desc", "brain"),
                 ]
-                if res is not None:
-                    filters.append(("res", str(res)))
+                filters.extend(data_filter)
 
                 mask_img = load_img(
                     get_bids_files(
                         get_bids_preprocessed_folder(),
-                        sub_label=subject_label,
+                        sub_label=subject,
                         modality_folder="func",
                         filters=filters,
                         file_tag="mask",
@@ -151,158 +172,131 @@ def run_first_level(
 
                 # Brain masking
                 imgs_i_data[mask_img_data == 0] = np.nan
+                data.append(imgs_i_data)
 
-                labels, estimates = run_glm(
-                    imgs_i_data.reshape(-1, imgs_i_data.shape[-1]).T,
-                    design_matrix.values,
-                )
-                for key, value in estimates.items():
-                    if not isinstance(value, SimpleRegressionResults):
-                        estimates[key] = SimpleRegressionResults(value)
+            print(f"Saving design matrix for subject {subject}")
+            design_matrices = pd.concat(design_matrices, axis=0)
+            design_matrices = design_matrices.fillna(0)
+            design_matrix_path = _get_design_matrix_path(subject, task)
+            design_matrices.to_csv(design_matrix_path)
+            data_long = np.concatenate(data, axis=-1)
 
-                # Dump labels and estimates
-                labels_path, estimates_path = get_first_level_model_paths(
-                    subject_label, task, run_i + 1
-                )
-                with open(labels_path, "wb") as f:
-                    pickle.dump(labels, f)
-                with open(estimates_path, "wb") as f:
-                    pickle.dump(estimates, f)
+            print(f"Running GLM for subject {subject}")
+            labels, estimates = run_glm(
+                data_long.reshape(-1, data_long.shape[-1]).T,
+                design_matrices.values,
+            )
+            for key, value in estimates.items():
+                if not isinstance(value, SimpleRegressionResults):
+                    estimates[key] = SimpleRegressionResults(value)
 
-                # Save design matrix
-                design_matrix_path = get_design_matrix_path(
-                    subject_label, task
-                )
-                design_matrix["run"] = run_i + 1
-                design_matrix.reset_index(inplace=True, names=["frame_times"])
-                design_matrix.set_index(["run", "frame_times"], inplace=True)
-                if not os.path.exists(design_matrix_path):
-                    design_matrix.to_csv(design_matrix_path, index=True)
-                else:
-                    design_matrix_prev = pd.read_csv(
-                        design_matrix_path, index_col=["run", "frame_times"]
-                    )
-                    design_matrix = pd.concat(
-                        [design_matrix_prev, design_matrix], axis=0
-                    )
-                    design_matrix.to_csv(design_matrix_path, index=True)
+            # Dump labels and estimates
+            print(f"Saving model files for subject {subject}")
+            labels_path, estimates_path = _get_model_labels_path(
+                subject, task
+            ), _get_model_estimates_path(subject, task)
+            with open(labels_path, "wb") as f:
+                pickle.dump(labels, f)
+            with open(estimates_path, "wb") as f:
+                pickle.dump(estimates, f)
 
-                vars = design_matrix.columns
-                for var_i, var in enumerate(vars):
-                    var_array = np.zeros((len(vars)))
-                    var_array[var_i] = 1
-
-                    maps_i = {}
-
-                    contrast = compute_contrast(
-                        labels, estimates, var_array, stat_type="t"
-                    )
-                    maps_i["effect"] = contrast.effect_size().reshape(
-                        imgs_i_data.shape[:-1]
-                    )
-                    maps_i["variance"] = contrast.effect_variance().reshape(
-                        imgs_i_data.shape[:-1]
-                    )
-                    maps_i["t"] = contrast.stat().reshape(
-                        imgs_i_data.shape[:-1]
-                    )
-                    maps_i["z"] = contrast.z_score().reshape(
-                        imgs_i_data.shape[:-1]
-                    )
-                    maps_i["p"] = contrast.p_value().reshape(
-                        imgs_i_data.shape[:-1]
-                    )
-
-                    # Export contrast maps
-                    for map_type, map_data in maps_i.items():
-                        new_img_like(imgs_i, map_data).to_filename(
-                            get_contrast_path(
-                                subject_label, task, run_i + 1, var, map_type
-                            )
-                        )
-
-                    if run_i == 0:
-                        register_contrast_and_create_maps(
-                            subject_label, task, var, var_array
-                        )
-
-                # Compute degrees of freedom
-                dof = imgs_i_data.shape[-1] - len(vars)
-                if subject_label not in dofs:
-                    dofs[subject_label] = pd.DataFrame(
-                        columns=["task", "run", "dof"]
-                    )
-                dofs[subject_label] = pd.concat(
-                    [
-                        dofs[subject_label],
-                        pd.DataFrame(
-                            {"task": [task], "run": [run_i + 1], "dof": [dof]}
-                        ),
-                    ]
-                )
-
-    for subject, df in dofs.items():
-        df.to_csv(get_dof_path(subject, task), index=False)
-
-
-def get_first_level_model_paths(subject: str, task: str, run: int):
-    labels_path = os.path.join(
-        get_subject_model_folder(subject, task),
-        f"sub-{subject}_task-{task}_run-{run}_model-labels.pkl",
-    )
-    estimates_path = os.path.join(
-        get_subject_model_folder(subject, task),
-        f"sub-{subject}_task-{task}_run-{run}_model-estimates.pkl",
-    )
-    return labels_path, estimates_path
-
-
-def register_contrast_and_create_maps(
-    subject: str,
-    task: str,
-    contrast_name: str,
-    contrast_def: Union[List[float], str],
-):
-    """
-    Register a contrast and create maps for all runs.
-
-    Parameters
-    ----------
-    subject : str
-        Subject label.
-    task : str
-        Task label.
-    contrast_name : str
-        Contrast name.
-    contrast_def : list of float or str
-        Contrast definition. If str, it should be a valid expression for the
-        design, e.g. 'A - B'.
-    """
-    if isinstance(contrast_def, str):
-        design_matrix = get_design_matrix(subject, task, "all")
-        contrast_def = expression_to_contrast_vector(
-            contrast_def, design_matrix.columns
-        )
-    register_contrast(subject, task, contrast_name, contrast_def)
-    runs = get_runs(subject, task)
-    for run in runs:
-        for map_type in ["effect", "t", "z", "p", "variance"]:
-            _create_contrast_single_run(
-                subject,
-                task,
-                run,
-                contrast_def,
-                map_type,
+            ref_img = Nifti1Image(
+                imgs_i.get_fdata()[:, :, :, 0], imgs_i.affine, imgs_i.header
             )
 
+            run_label_masks = {}
+            run_label_masks["all"] = np.ones((len(events * len(orig_cols))))
+            run_label_masks["all"] = run_label_masks["all"] / len(events)
+            odd_mask = np.zeros((len(events)))
+            odd_mask[::2] = 1
+            run_label_masks["odd"] = np.repeat(odd_mask, len(orig_cols))
+            run_label_masks["even"] = ~run_label_masks["odd"].astype(bool)
 
-def get_first_level_model(subject: str, task: str, run: int):
-    labels_path, estimates_path = get_first_level_model_paths(
-        subject, task, run
-    )
+            run_label_masks["odd"] = (
+                run_label_masks["odd"]
+                / np.sum(run_label_masks["odd"])
+                * len(orig_cols)
+            )
+            run_label_masks["even"] = (
+                run_label_masks["even"]
+                / np.sum(run_label_masks["even"])
+                * len(orig_cols)
+            )
+            for run_i in range(len(events)):
+                run_i_label = str(run_i + 1)
+                run_label_masks[run_i_label] = np.zeros((len(events)))
+                run_label_masks[run_i_label][run_i] = 1
+                run_label_masks[run_i_label] = np.repeat(
+                    run_label_masks[run_i_label], len(orig_cols)
+                )
+
+                orth_i_label = f"orth{run_i_label}"
+                run_label_masks[orth_i_label] = ~run_label_masks[
+                    run_i_label
+                ].astype(bool)
+
+                run_label_masks[orth_i_label] = (
+                    run_label_masks[orth_i_label]
+                    / np.sum(run_label_masks[orth_i_label])
+                    * len(orig_cols)
+                )
+
+            print(f"Creating main contrasts for subject {subject}")
+            for orig_col_i, orig_col in enumerate(orig_cols):
+                for run_label, mask in run_label_masks.items():
+                    if run_label == "all":
+                        con_name = orig_col
+                    else:
+                        con_name = f"{run_label}_{orig_col}"
+                    con_def = np.zeros(len(orig_cols))
+                    con_def[orig_col_i] = 1
+                    con_def = np.tile(con_def, len(events))
+                    con_def = con_def * mask
+
+                    _register_contrast(subject, task, con_name, con_def)
+                    _create_contrast(
+                        subject,
+                        task,
+                        run_label,
+                        orig_col,
+                        con_def,
+                        labels,
+                        estimates,
+                        ref_img,
+                    )
+
+            print(f"Creating additional contrasts for subject {subject}")
+            for contrast in other_contrasts:
+                contrast_vector = expression_to_contrast_vector(
+                    contrast, orig_cols
+                )
+                for run_label, mask in run_label_masks.items():
+                    if run_label == "all":
+                        con_name = contrast
+                    else:
+                        con_name = f"{run_label}_{contrast}"
+                    con_def = np.tile(contrast_vector, len(events))
+                    con_def = con_def * mask
+                    _register_contrast(subject, task, con_name, con_def)
+                    _create_contrast(
+                        subject,
+                        task,
+                        run_label,
+                        contrast,
+                        con_def,
+                        labels,
+                        estimates,
+                        ref_img,
+                    )
+
+
+def _get_first_level_model(subject: str, task: str):
+    labels_path, estimates_path = _get_model_labels_path(
+        subject, task
+    ), _get_model_estimates_path(subject, task)
     assert os.path.exists(labels_path) and os.path.exists(
         estimates_path
-    ), f"Model files not found for subject {subject}, task {task}, run {run}."
+    ), f"Model files not found for subject {subject}, task {task}."
     with open(labels_path, "rb") as f:
         labels = pickle.load(f)
     with open(estimates_path, "rb") as f:
@@ -310,44 +304,49 @@ def get_first_level_model(subject: str, task: str, run: int):
     return labels, estimates
 
 
-def _create_contrast_single_run(
+def _create_contrast(
     subject: str,
     task: str,
-    run_label: int,
-    contrast_vector: List[float],
-    type: str,
-) -> Nifti1Image:
-    labels, estimates = get_first_level_model(subject, task, run_label)
+    run_label: str,
+    contrast_name: str,
+    contrast_def: List[float],
+    labels: Optional[List[str]] = None,
+    estimates: Optional[dict] = None,
+    ref_img: Optional[Nifti1Image] = None,
+):
+    # Get first run to get reference image
+    if labels is None or estimates is None:
+        labels, estimates = _get_first_level_model(subject, task)
+    if ref_img is None:
+        run0 = _get_contrast_runs(subject, task)[0]
+        contrast_info_path = _get_contrast_info_path(subject, task)
+        contrast_info = pd.read_csv(contrast_info_path)
+        contrast0 = contrast_info["contrast"][0]
+        ref_img = load_img(
+            _get_contrast_path(subject, task, run0, contrast0, "effect")
+        )
 
-    run0 = get_runs(subject, task)[0]
-    contrast_info_path = get_contrast_info_path(subject, task)
-    contrast_info = pd.read_csv(contrast_info_path)
-    contrast0 = contrast_info["contrast"][0]
-    ref_img = load_img(get_contrast_path(subject, task, run0, contrast0, type))
-
-    contrast = compute_contrast(
-        labels, estimates, contrast_vector, stat_type="t"
+    maps = {}
+    contrast = compute_contrast(labels, estimates, contrast_def, stat_type="t")
+    maps["t"] = new_img_like(
+        ref_img, contrast.stat().reshape(ref_img.get_fdata().shape)
     )
-    if type == "t":
-        return new_img_like(
-            ref_img, contrast.stat().reshape(ref_img.get_fdata().shape)
+    maps["p"] = new_img_like(
+        ref_img, contrast.p_value().reshape(ref_img.get_fdata().shape)
+    )
+    maps["z"] = new_img_like(
+        ref_img, contrast.z_score().reshape(ref_img.get_fdata().shape)
+    )
+    maps["effect"] = new_img_like(
+        ref_img, contrast.effect_size().reshape(ref_img.get_fdata().shape)
+    )
+    maps["variance"] = new_img_like(
+        ref_img, contrast.effect_variance().reshape(ref_img.get_fdata().shape)
+    )
+
+    for map_type, map_data in maps.items():
+        map_data.to_filename(
+            _get_contrast_path(
+                subject, task, run_label, contrast_name, map_type
+            )
         )
-    elif type == "p":
-        return new_img_like(
-            ref_img, contrast.p_value().reshape(ref_img.get_fdata().shape)
-        )
-    elif type == "z":
-        return new_img_like(
-            ref_img, contrast.z_score().reshape(ref_img.get_fdata().shape)
-        )
-    elif type == "effect":
-        return new_img_like(
-            ref_img, contrast.effect_size().reshape(ref_img.get_fdata().shape)
-        )
-    elif type == "variance":
-        return new_img_like(
-            ref_img,
-            contrast.effect_variance().reshape(ref_img.get_fdata().shape),
-        )
-    else:
-        raise ValueError(f"Type {type} not recognized.")

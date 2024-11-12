@@ -1,3 +1,16 @@
+[project]
+name = "funROI"
+authors = [{name = "Ruimin Gao", email = "ruimin.gao@gatech.edu"}]
+dependencies = [
+    "sphinx>=4.0",
+    "sphinx_rtd_theme",
+    # add other Sphinx extensions here if used
+]
+
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
 [tool.black]
 line-length = 79
 
@@ -11,4 +24,8 @@ directory = "htmlcov"
 title = "Coverage Report"
 
 [tool.pytest.ini_options]
-addopts = "--cov=./funROI --cov-branch --cov-report=html"
+addopts = "--cov=funROI --cov-branch --cov-report=html"
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s [%(levelname)s] %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"

@@ -1,39 +1,60 @@
+from pathlib import Path
+from typing import Union, List
+from ..contrast import (
+    _get_contrast_folder,
+    _get_design_matrix_path,
+    _get_contrast_path,
+    _get_model_folder,
+    _get_contrast_info_path,
+)
+from ..utils import ensure_paths
 from nilearn.image import load_img, new_img_like
 from scipy.stats import t as t_dist
 import h5py
 import numpy as np
-import os
 import pandas as pd
 import re
-from ..utils import (
-    get_subject_model_folder,
-    get_subject_contrast_folder,
-    get_contrast_path,
-    get_dof_path,
-    get_design_matrix_path,
-)
-
-from ..contrast import register_contrast
+from .utils import _register_contrast
 
 
-def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
+@ensure_paths("spm_dir")
+def migrate_first_level_from_spm(
+    spm_dir: Union[str, Path], subject: str, task: str
+):
     """
-    Migrate first-level results from SPM to BIDS.
+    Migrate first-level contrasts from SPM to BIDS, to be used with later
+    stages of the pipeline.
 
-    Parameters
-    ----------
-    spm_dir : str
-        Path to the SPM directory. The directory should contain 'SPM.mat',
-    subject : str
-        Subject label.
-    task : str
-        Task label.
+    .. warning:: Since contrast computation is quite model-specific, it is
+        assumed that all needed contrasts are already computed in SPM. E.g.,
+        contrasts for each run, all-but-one, odd, and even runs, etc. These
+        contrasts are assumed to be named in the following way in SPM:
+
+        - Contrast by run: SESSION<session_number>_<contrast_name>
+
+        - All-but-one contrast: ORTH_TO_SESSION<session_number>_<contrast_name>
+
+        - Odd-run contrast: ODD_<contrast_name>
+
+        - Even-run contrast: EVEN_<contrast_name>
+
+    :param spm_dir: Path to the SPM directory. The directory should contain
+        'SPM.mat'.
+    :type spm_dir: Union[str, Path]
+    :param subject: Subject label.
+    :type subject: str
+    :param task: Task label.
+    :type task: str
+
+    :raises FileNotFoundError: If 'SPM.mat' is not found in the SPM directory.
     """
-    os.makedirs(get_subject_model_folder(subject, task), exist_ok=True)
-    os.makedirs(get_subject_contrast_folder(subject, task), exist_ok=True)
+    _get_model_folder(subject, task).mkdir(parents=True, exist_ok=True)
+    _get_contrast_folder(subject, task).mkdir(parents=True, exist_ok=True)
 
-    spm_mat_path = os.path.join(spm_dir, "SPM.mat")
-    assert os.path.exists(spm_mat_path), f"'SPM.mat' not found in {spm_dir}"
+    spm_mat_path = spm_dir / "SPM.mat"
+    if not spm_mat_path.exists():
+        raise FileNotFoundError(f"'SPM.mat' not found in {spm_dir}")
+
     with h5py.File(spm_mat_path, "r") as f:
         spm = f["SPM"]
 
@@ -47,10 +68,9 @@ def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
         design_matrix_df = pd.DataFrame(
             design_matrix[()].T, columns=design_matrix_names
         )
-        design_matrix_path = get_design_matrix_path(subject, task)
+        design_matrix_path = _get_design_matrix_path(subject, task)
         design_matrix_df.to_csv(design_matrix_path, index=False)
 
-        Bcov = spm["xX"]["Bcov"][()]  # covariance matrix (Bcov)
         con_fnames = f["/SPM/xCon/name"]
         con_names = []
         for fname in con_fnames:
@@ -61,17 +81,13 @@ def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
             con = f[f["/SPM/xCon/c"][i].item()][()]
             con_vectors.append(con)
 
-    resms_path = os.path.join(spm_dir, "ResMS.nii")
-    resms_img = load_img(resms_path)
-    resms_data = resms_img.get_fdata()
-
     run_ids = set()
     # Export contrasts
     for i, con_name in enumerate(con_names):
-        register_contrast(subject, task, con_name, con_vectors[i][0].tolist())
-        effect_path = os.path.join(spm_dir, f"con_{i+1:04}.nii")
+        _register_contrast(subject, task, con_name, con_vectors[i][0].tolist())
+        effect_path = spm_dir / f"con_{i+1:04}.nii"
         effect_img = load_img(effect_path)
-        t_path = os.path.join(spm_dir, f"spmT_{i+1:04}.nii")
+        t_path = spm_dir / f"spmT_{i+1:04}.nii"
         t_img = load_img(t_path)
 
         # spmT specific - convert t=0 to NaN
@@ -100,46 +116,20 @@ def migrate_first_level_from_spm(spm_dir: str, subject: str, task: str):
             contrast_label = con_name
 
         effect_img.to_filename(
-            get_contrast_path(
+            _get_contrast_path(
                 subject, task, run_label, contrast_label, "effect"
             )
         )
-
         t_img.to_filename(
-            get_contrast_path(subject, task, run_label, contrast_label, "t")
+            _get_contrast_path(subject, task, run_label, contrast_label, "t")
         )
 
         p_img = new_img_like(
-            t_img, 1 - t_dist.cdf(t_img.get_fdata(), dof_residual)
+            t_img,
+            (1 - t_dist.cdf(t_img.get_fdata(), dof_residual)).astype(
+                np.float32
+            ),
         )
         p_img.to_filename(
-            get_contrast_path(subject, task, run_label, contrast_label, "p")
+            _get_contrast_path(subject, task, run_label, contrast_label, "p")
         )
-
-        var_img = new_img_like(
-            t_img,
-            con_vectors[i].reshape(1, -1)
-            @ Bcov
-            @ con_vectors[i].reshape(-1, 1)
-            * resms_data,
-        )
-        var_img.to_filename(
-            get_contrast_path(
-                subject, task, run_label, contrast_label, "variance"
-            )
-        )
-
-    dof_df = pd.DataFrame({})
-    for run_i in run_ids:
-        dof_df = pd.concat(
-            [
-                dof_df,
-                pd.DataFrame(
-                    {"task": [task], "run": [run_i], "dof": [dof_residual]}
-                ),
-            ],
-            ignore_index=True,
-        )
-
-    dof_df_path = get_dof_path(subject, task)
-    dof_df.to_csv(dof_df_path, index=False)
