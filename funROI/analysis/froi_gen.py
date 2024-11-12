@@ -1,7 +1,7 @@
 from typing import List, Optional, Union, Tuple
 from .. import get_analysis_output_folder
 from ..froi import FROIConfig, _create_froi, _get_froi_path
-from ..parcels import get_parcels
+from ..parcels import get_parcels, ParcelsConfig
 import numpy as np
 from nibabel.nifti1 import Nifti1Image
 from nilearn.image import load_img
@@ -63,14 +63,16 @@ class FROIGenerator:
                     warnings.warn(
                         f"Error generating fROI for subject {subject}"
                     )
-                froi_img = load_img(froi_pth)
-                data.append((subject, froi_img))
+                    continue
 
                 # Save the the output directory
                 froi_pth = self._get_analysis_froi_path(
                     subject, self.run_label, self.froi, create=True
                 )
                 froi_img.to_filename(froi_pth)
+
+            froi_img = load_img(froi_pth)
+            data.append((subject, froi_img))
 
         self.subjects = [dat[0] for dat in data]
         self._data = [dat[1] for dat in data]
@@ -163,6 +165,10 @@ class FROIGenerator:
             config.parcels,
         )
 
+        if not isinstance(parcels, ParcelsConfig):
+            parcels = ParcelsConfig(parcels)
+        contrasts = str(sorted(contrasts))
+
         frois_new = pd.DataFrame(
             {
                 "contrasts": [contrasts],
@@ -184,14 +190,34 @@ class FROIGenerator:
         else:
             frois = pd.read_csv(froi_info_pth)
             frois_matched = frois[
-                (frois["contrasts"] == contrasts)
-                & (frois["conjunction_type"] == conjunction_type)
-                & (frois["threshold_type"] == threshold_type)
-                & (frois["threshold_value"] == threshold_value)
-                & (frois["parcels"] == str(parcels.parcels_path))
-                & (
-                    (frois["labels"] == parcels.labels_path)
-                    | (frois["labels"].isna() & (parcels.labels_path is None))
+                frois.apply(
+                    lambda row: (
+                        (row["contrasts"] == contrasts)
+                        and (
+                            (row["conjunction_type"] == conjunction_type)
+                            or (
+                                pd.isna(row["conjunction_type"])
+                                and conjunction_type is None
+                            )
+                        )
+                        and (row["threshold_type"] == threshold_type)
+                        and (row["threshold_value"] == threshold_value)
+                        and (
+                            (row["parcels"] == str(parcels.parcels_path))
+                            or (
+                                pd.isna(row["parcels"])
+                                and parcels.parcels_path is None
+                            )
+                        )
+                        and (
+                            (row["labels"] == parcels.labels_path)
+                            or (
+                                pd.isna(row["labels"])
+                                and parcels.labels_path is None
+                            )
+                        )
+                    ),
+                    axis=1,
                 )
             ]
             if not frois_matched.empty:

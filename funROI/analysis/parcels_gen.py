@@ -320,7 +320,7 @@ class ParcelsGenerator:
             parcel_mask = parcels == parcel
             parcel_size = np.sum(parcel_mask)
             if parcel_size < min_voxel_size:
-                parcels[parcel_mask] = 0
+                filtered_parcels[parcel_mask] = 0
             else:
                 subject_coverage = np.zeros(len(binary_masks_by_run))
                 for subjecti, data in enumerate(binary_masks_by_run):
@@ -331,7 +331,7 @@ class ParcelsGenerator:
                         > 0
                     )
                 if np.mean(subject_coverage) < overlap_thr_roi:
-                    parcels[parcel_mask] = 0
+                    filtered_parcels[parcel_mask] = 0
         return filtered_parcels
 
     @staticmethod

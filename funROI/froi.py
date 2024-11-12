@@ -136,26 +136,39 @@ def _get_froi_path(
             frois_new.to_csv(info_path, index=False)
     else:
         frois = pd.read_csv(info_path)
+
         frois_matched = frois[
-            (frois["contrasts"] == contrasts)
-            & (
-                (frois["conjunction_type"] == conjunction_type)
-                | (
-                    frois["conjunction_type"].isna()
-                    & (conjunction_type is None)
-                )
-            )
-            & (frois["threshold_type"] == threshold_type)
-            & (frois["threshold_value"] == threshold_value)
-            & (
-                (frois["parcels"] == str(parcels.parcels_path))
-                | (frois["parcels"].isna() & (parcels.parcels_path is None))
-            )
-            & (
-                (frois["labels"] == parcels.labels_path)
-                | (frois["labels"].isna() & (parcels.labels_path is None))
+            frois.apply(
+                lambda row: (
+                    (row["contrasts"] == contrasts)
+                    and (
+                        (row["conjunction_type"] == conjunction_type)
+                        or (
+                            pd.isna(row["conjunction_type"])
+                            and conjunction_type is None
+                        )
+                    )
+                    and (row["threshold_type"] == threshold_type)
+                    and (row["threshold_value"] == threshold_value)
+                    and (
+                        (row["parcels"] == str(parcels.parcels_path))
+                        or (
+                            pd.isna(row["parcels"])
+                            and parcels.parcels_path is None
+                        )
+                    )
+                    and (
+                        (row["labels"] == parcels.labels_path)
+                        or (
+                            pd.isna(row["labels"])
+                            and parcels.labels_path is None
+                        )
+                    )
+                ),
+                axis=1,
             )
         ]
+
         if len(frois_matched) == 0:
             id = frois["id"].max() + 1
             if create:
