@@ -15,6 +15,7 @@ from nilearn.glm.first_level import (
     first_level_from_bids,
     make_first_level_design_matrix,
     run_glm,
+    mean_scaling,
 )
 from nilearn.glm import (
     compute_contrast,
@@ -151,7 +152,7 @@ def run_first_level(
                 ]
                 for search_label in ["ses", "task", "run"]:
                     search_res = re.search(
-                        f"{search_label}-(\w+)_", imgs[run_i]
+                        rf"{search_label}-(\w+)_", imgs[run_i]
                     )
                     if search_res:
                         filters.append((search_label, search_res.group(1)))
@@ -182,8 +183,12 @@ def run_first_level(
             data_long = np.concatenate(data, axis=-1)
 
             print(f"Running GLM for subject {subject}")
+
+            Y = data_long.reshape(-1, data_long.shape[-1]).T
+            Y, _ = mean_scaling(Y, axis=(0))
+
             labels, estimates = run_glm(
-                data_long.reshape(-1, data_long.shape[-1]).T,
+                Y,
                 design_matrices.values,
                 n_jobs=-1,
                 random_state=0,

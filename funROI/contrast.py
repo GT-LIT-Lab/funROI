@@ -201,7 +201,6 @@ def _check_orthogonal(
                     f"{contrast_2}. Cannot check orthogonality."
                 )
             c = np.stack([vector1, vector2], axis=0)
-            print(c.shape, XpX.shape)
             if np.abs(c @ XpX @ c.T)[0, 1] >= tol:
                 return False
     return True
