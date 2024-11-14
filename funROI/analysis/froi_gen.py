@@ -65,6 +65,7 @@ class FROIGenerator:
                     )
                     continue
 
+                froi_img = load_img(froi_pth)
                 # Save the the output directory
                 froi_pth = self._get_analysis_froi_path(
                     subject, self.run_label, self.froi, create=True

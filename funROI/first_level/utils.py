@@ -8,6 +8,7 @@ import pandas as pd
 def _register_contrast(
     subject: str, task: str, contrast_name: str, contrast_vector: List[float]
 ):
+    contrast_vector = [float(v) for v in contrast_vector]
     contrast_info_path = _get_contrast_info_path(subject, task)
     if not contrast_info_path.exists():
         contrast_info = pd.DataFrame(columns=["contrast", "vector"])

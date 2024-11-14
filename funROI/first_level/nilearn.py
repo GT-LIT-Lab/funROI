@@ -178,7 +178,7 @@ def run_first_level(
             design_matrices = pd.concat(design_matrices, axis=0)
             design_matrices = design_matrices.fillna(0)
             design_matrix_path = _get_design_matrix_path(subject, task)
-            design_matrices.to_csv(design_matrix_path)
+            design_matrices.to_csv(design_matrix_path, index=False)
             data_long = np.concatenate(data, axis=-1)
 
             print(f"Running GLM for subject {subject}")
