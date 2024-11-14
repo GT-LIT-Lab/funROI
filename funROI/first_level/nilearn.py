@@ -145,16 +145,16 @@ def run_first_level(
 
                 design_matrices.append(design_matrix)
 
-                ses_label = re.search(r"ses-(\w+)_", imgs[run_i]).group(1)
-                task_label = re.search(r"task-(\w+)_", imgs[run_i]).group(1)
-                run_label = re.search(r"run-(\d+)_", imgs[run_i]).group(1)
                 filters = [
-                    ("ses", ses_label),
-                    ("task", task_label),
-                    ("run", run_label),
                     ("space", space),
                     ("desc", "brain"),
                 ]
+                for search_label in ["ses", "task", "run"]:
+                    search_res = re.search(
+                        f"{search_label}-(\w+)_", imgs[run_i]
+                    )
+                    if search_res:
+                        filters.append((search_label, search_res.group(1)))
                 filters.extend(data_filter)
 
                 mask_img = load_img(
@@ -185,6 +185,8 @@ def run_first_level(
             labels, estimates = run_glm(
                 data_long.reshape(-1, data_long.shape[-1]).T,
                 design_matrices.values,
+                n_jobs=-1,
+                random_state=0,
             )
             for key, value in estimates.items():
                 if not isinstance(value, SimpleRegressionResults):
