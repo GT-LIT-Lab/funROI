@@ -62,7 +62,10 @@ def run_first_level(
     other_contrasts: Optional[List[str]] = [],
 ):
     """
-    Run first-level analysis for a list of subjects.
+    Run first-level analysis for a list of subjects. The preprocessed dataset 
+    should be organized in BIDS format. The data and preprocessed data folders
+    should be specified before running this function using `set_bids_data_folder`
+    and `set_bids_preprocessed_folder`.
 
     :param subjects: List of subject labels.
     :type subjects: List[str]
