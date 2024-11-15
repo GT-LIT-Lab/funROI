@@ -58,21 +58,18 @@ class FROIGenerator:
             froi_pth = _get_froi_path(subject, self.run_label, self.froi)
             if not froi_pth.exists():
                 _create_froi(subject, self.froi, self.run_label)
-                froi_pth = _get_froi_path(subject, self.run_label, self.froi)
                 if not froi_pth.exists():
                     warnings.warn(
                         f"Error generating fROI for subject {subject}"
                     )
                     continue
 
-                froi_img = load_img(froi_pth)
-                # Save the the output directory
-                froi_pth = self._get_analysis_froi_path(
-                    subject, self.run_label, self.froi, create=True
-                )
-                froi_img.to_filename(froi_pth)
-
             froi_img = load_img(froi_pth)
+            # Save the the output directory
+            froi_pth = self._get_analysis_froi_path(
+                subject, self.run_label, self.froi, create=True
+            )
+            froi_img.to_filename(froi_pth)
             data.append((subject, froi_img))
 
         self.subjects = [dat[0] for dat in data]
@@ -211,7 +208,7 @@ class FROIGenerator:
                             )
                         )
                         and (
-                            (row["labels"] == parcels.labels_path)
+                            (row["labels"] == str(parcels.labels_path))
                             or (
                                 pd.isna(row["labels"])
                                 and parcels.labels_path is None
