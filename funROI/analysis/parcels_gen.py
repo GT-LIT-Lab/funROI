@@ -147,6 +147,10 @@ class ParcelsGenerator:
                         "previous images."
                     )
             subject_data = np.array(subject_data)
+            if len(subject_data) == 0:
+                raise ValueError(
+                    f"No data found for subject {subject} and task {task}."
+                )
             new_data.append(subject_data)
         self._data.extend(new_data)
         self.configs.append({"subjects": subjects, "froi": froi})
@@ -161,7 +165,7 @@ class ParcelsGenerator:
         :rtype: Nifti1Image
         """
         binary_masks = [np.mean(dat, axis=0) > 0.5 for dat in self._data]
-        self.parcels = self._run(
+        self.overlap_map, self.parcels = self._run(
             binary_masks,
             self.img_shape,
             self.img_affine,
@@ -169,7 +173,6 @@ class ParcelsGenerator:
             self.overlap_thr_vox,
             self.use_spm_smooth,
         )
-        self._save()
 
         if self.min_voxel_size != 0 or self.overlap_thr_roi != 0:
             self.parcels = self._filter(
@@ -178,7 +181,8 @@ class ParcelsGenerator:
                 self.overlap_thr_roi,
                 self.min_voxel_size,
             )
-            self._save()
+            
+        self._save()
 
         if return_results:
             return Nifti1Image(self.parcels, self.img_affine)
@@ -192,7 +196,7 @@ class ParcelsGenerator:
         smoothing_kernel_size: Union[float, List[float]],
         overlap_thr_vox: float,
         use_spm_smooth: bool,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Run the parcels generation.
 
@@ -215,26 +219,26 @@ class ParcelsGenerator:
             using Nilearn's Gaussian smoothing.
         :type use_spm_smooth: bool
 
-        :return: The generated parcels in 3D format.
-        :rtype: np.ndarray
+        :return: The probablistic map, and generated parcels in 3D format.
+        :rtype: Tuple[np.ndarray, np.ndarray]
         """
         overlap_map = np.mean(binary_masks, axis=0).reshape(img_shape)
 
         if use_spm_smooth:
             smoothed_map = cls._smooth_array(
-                overlap_map,
+                overlap_map.copy(),
                 img_affine,
                 smoothing_kernel_size,
             )
         else:
             smoothed_map = smooth_img(
-                Nifti1Image(overlap_map, img_affine),
+                Nifti1Image(overlap_map.copy(), img_affine),
                 fwhm=smoothing_kernel_size,
             ).get_fdata()
 
         smoothed_map[smoothed_map < overlap_thr_vox] = np.nan
         parcels = cls._watershed(-smoothed_map)
-        return parcels
+        return overlap_map, parcels
 
     def filter(
         self,
@@ -355,6 +359,15 @@ class ParcelsGenerator:
                     },
                     f,
                 )
+
+        overlap_map_pth = (
+            self._get_analysis_parcels_folder(self.parcels_name)
+            / "overlap_map.nii.gz"
+        )
+        if not overlap_map_pth.exists():
+            overlap_map_img = Nifti1Image(self.overlap_map, self.img_affine)
+            overlap_map_img.to_filename(overlap_map_pth)
+
         base_pattern = f"{self.parcels_name}_*.nii.gz"
         matched = list(
             self._get_analysis_parcels_folder(self.parcels_name).glob(

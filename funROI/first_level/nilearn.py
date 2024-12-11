@@ -59,7 +59,7 @@ def run_first_level(
     data_filter: Optional[dict] = {},
     confound_labels: Optional[List[str]] = [],
     design_matrix_args: Optional[dict] = {},
-    other_contrasts: Optional[List[str]] = [],
+    other_contrasts: Optional[List[Union[str, Tuple[str, str]]]] = [],
 ):
     """
     Run first-level analysis for a list of subjects. The preprocessed dataset 
@@ -81,9 +81,10 @@ def run_first_level(
     :param design_matrix_args: Design matrix arguments to be passed to the
         Nilearn `make_first_level_design_matrix` function.
     :type design_matrix_args: Optional[dict]
-    :param other_contrasts: List of contrast definitions. Each contrast is a
-        string that defines the contrast formula.
-    :type other_contrasts: Optional[List[str]]
+    :param other_contrasts: List of contrast definitions. Each contrast is 
+        either a string, indicating a formula, or a tuple of two strings,
+        indicating the contrast name and the formula.
+    :type other_contrasts: Optional[List[Union[str, Tuple[str, str]]]]
     """
     os.makedirs(get_bids_deriv_folder(), exist_ok=True)
     dofs = {}
@@ -253,6 +254,16 @@ def run_first_level(
 
             print(f"Creating main contrasts for subject {subject}")
             for orig_col_i, orig_col in enumerate(orig_cols):
+                if 'drift' in orig_col or 'derivative' in orig_col:
+                    continue
+                cont = False
+                for confound_label in confound_labels:
+                    if confound_label in orig_col:
+                        cont = True
+                        break
+                if cont:
+                    continue
+                
                 for run_label, mask in run_label_masks.items():
                     if run_label == "all":
                         con_name = orig_col
@@ -277,14 +288,19 @@ def run_first_level(
 
             print(f"Creating additional contrasts for subject {subject}")
             for contrast in other_contrasts:
+                if isinstance(contrast, tuple):
+                    contrast_name, contrast = contrast
+                else:
+                    contrast_name = contrast
+                    
                 contrast_vector = expression_to_contrast_vector(
                     contrast, orig_cols
                 )
                 for run_label, mask in run_label_masks.items():
                     if run_label == "all":
-                        con_name = contrast
+                        con_name = contrast_name
                     else:
-                        con_name = f"{run_label}_{contrast}"
+                        con_name = f"{run_label}_{contrast_name}"
                     con_def = np.tile(contrast_vector, len(events))
                     con_def = con_def * mask
                     _register_contrast(subject, task, con_name, con_def)
@@ -292,11 +308,94 @@ def run_first_level(
                         subject,
                         task,
                         run_label,
-                        contrast,
+                        contrast_name,
                         con_def,
                         labels,
                         estimates,
                         ref_img,
+                    )
+
+def add_contrasts(
+    subjects: List[str],
+    tasks: List[str],
+    contrasts: Optional[List[Union[str, Tuple[str, str]]]] = [],
+):
+    """
+    Post-hoc addition of contrasts to existing first-level models.
+
+    :param subjects: List of subject labels.
+    :type subjects: List[str]
+    :param tasks: List of task labels.
+    :type tasks: List[str]
+    :param contrasts: List of contrast definitions. Each contrast is 
+        either a string, indicating a formula, or a tuple of two strings,
+        indicating the contrast name and the formula.
+    :type contrasts: Optional[List[Union[str, Tuple[str, str]]]]
+    """
+    for task in tasks:
+        for subject in subjects:
+            # Load model
+            labels, estimates = _get_first_level_model(subject, task)
+            design_matrix = _get_design_matrix(subject, task)
+            orig_cols_run = design_matrix.columns
+            run_ns = orig_cols_run.str.extract(r"run_(\d+)_")[0].unique()
+            # remove run_*_ prefix
+            orig_cols = list(set(re.sub(r"run_\d+_", "", col) for col in orig_cols_run))
+            for contrast in contrasts:
+                if isinstance(contrast, tuple):
+                    contrast_name, contrast = contrast
+                else:
+                    contrast_name = contrast
+                contrast_vector = expression_to_contrast_vector(
+                    contrast, orig_cols
+                )
+                contrast_vector_run = np.zeros(len(orig_cols_run))
+                for i, var in enumerate(orig_cols_run):
+                    var_name = re.sub(r"run_\d+_", "", var)
+                    if var_name not in orig_cols:
+                        contrast_vector_run[i] = 0 
+                    else:
+                        contrast_vector_run[i] = contrast_vector[orig_cols.index(var_name)]
+                contrast_vector_run = contrast_vector_run / len(run_ns)
+                _register_contrast(subject, task, contrast_name, contrast_vector_run)
+                _create_contrast(
+                    subject,
+                    task,
+                    "all",
+                    contrast_name,
+                    contrast_vector_run,
+                    labels,
+                    estimates,
+                )
+
+                for run_n in run_ns:
+                    run_label = int(run_n) + 1 # awkward stuff, # TODO: fix fun label problem in design matrix
+                    run_mask = orig_cols_run.str.startswith(f"run_{run_n}_")
+                    contrast_vector_run_masked = contrast_vector_run.copy()
+                    contrast_vector_run_masked[~run_mask] = 0
+                    _create_contrast(
+                        subject,
+                        task,
+                        run_label,
+                        contrast_name,
+                        contrast_vector_run_masked,
+                        labels,
+                        estimates,
+                    )
+
+                    # TODO: odd-even
+
+                    run_mask_orth = ~run_mask
+                    contrast_vector_run_masked_orth = contrast_vector_run.copy()
+                    contrast_vector_run_masked_orth[run_mask_orth] = 0
+                    _create_contrast(
+                        subject,
+                        task,
+                        f"orth{run_label}",
+                        contrast_name,
+                        contrast_vector_run_masked_orth,
+                        labels,
+                        estimates,
                     )
 
 
@@ -328,10 +427,10 @@ def _create_contrast(
     if labels is None or estimates is None:
         labels, estimates = _get_first_level_model(subject, task)
     if ref_img is None:
-        run0 = _get_contrast_runs(subject, task)[0]
         contrast_info_path = _get_contrast_info_path(subject, task)
         contrast_info = pd.read_csv(contrast_info_path)
         contrast0 = contrast_info["contrast"][0]
+        run0 = _get_contrast_runs(subject, task, contrast0)[0]
         ref_img = load_img(
             _get_contrast_path(subject, task, run0, contrast0, "effect")
         )
@@ -344,15 +443,15 @@ def _create_contrast(
     maps["p"] = new_img_like(
         ref_img, contrast.p_value().reshape(ref_img.get_fdata().shape)
     )
-    maps["z"] = new_img_like(
-        ref_img, contrast.z_score().reshape(ref_img.get_fdata().shape)
-    )
+    # maps["z"] = new_img_like(
+    #     ref_img, contrast.z_score().reshape(ref_img.get_fdata().shape)
+    # )
     maps["effect"] = new_img_like(
         ref_img, contrast.effect_size().reshape(ref_img.get_fdata().shape)
     )
-    maps["variance"] = new_img_like(
-        ref_img, contrast.effect_variance().reshape(ref_img.get_fdata().shape)
-    )
+    # maps["variance"] = new_img_like(
+    #     ref_img, contrast.effect_variance().reshape(ref_img.get_fdata().shape)
+    # )
 
     for map_type, map_data in maps.items():
         map_data.to_filename(

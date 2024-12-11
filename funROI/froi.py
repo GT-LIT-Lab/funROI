@@ -158,7 +158,7 @@ def _get_froi_path(
                         )
                     )
                     and (
-                        (row["labels"] == parcels.labels_path)
+                        (row["labels"] == str(parcels.labels_path))
                         or (
                             pd.isna(row["labels"])
                             and parcels.labels_path is None
@@ -178,6 +178,7 @@ def _get_froi_path(
         else:
             id = frois_matched["id"].values[0]
 
+    id = int(id)
     id = f"{id:04d}"
     return (
         _get_subject_froi_folder(subject, task)

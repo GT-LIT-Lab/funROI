@@ -94,13 +94,15 @@ class EffectEstimator(AnalysisSaver):
             okorth = np.all(okorths)
             contrasts = np.array(self.effects)
 
-            froi_all = _get_froi_data(subject, self.froi, "all")[None, :]
+            froi_all = _get_froi_data(subject, self.froi, "all")
             if froi_all is None:
                 warnings.warn(
                     f"Data not found for subject {subject}, fROI {self.froi}, "
                     "skipping."
                 )
                 continue
+            froi_all = froi_all[None, :]
+
             if not okorth:
                 froi_orth, froi_orth_labels = _get_orthogonalized_froi_data(
                     subject, self.froi, 1, self.orthogonalization
@@ -117,7 +119,9 @@ class EffectEstimator(AnalysisSaver):
                 if okorth:
                     data_i_effect = _get_contrast_data(
                         subject, self.task, "all", contrast, "effect"
-                    )[None, :]
+                    )
+                    if data_i_effect is not None:
+                        data_i_effect = data_i_effect[None, :]
                     data_i_froi = froi_all
                     effect_run_labels, froi_run_labels = ["all"], ["all"]
                 else:
@@ -141,6 +145,7 @@ class EffectEstimator(AnalysisSaver):
                         f"Data not found for subject {subject}, effect "
                         f"{contrast}, skipping."
                     )
+                    continue
 
                 df_summary, df_detail = self._run(
                     data_i_effect, data_i_froi, self.fill_na_with_zero
