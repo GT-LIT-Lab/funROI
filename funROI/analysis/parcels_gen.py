@@ -181,7 +181,7 @@ class ParcelsGenerator:
                 self.overlap_thr_roi,
                 self.min_voxel_size,
             )
-            
+
         self._save()
 
         if return_results:

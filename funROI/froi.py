@@ -182,7 +182,7 @@ def _get_froi_path(
     id = f"{id:04d}"
     return (
         _get_subject_froi_folder(subject, task)
-        / f"sub-{subject}_task_{task}_run-{run_label}_froi-{id}_mask.nii.gz"
+        / f"sub-{subject}_task-{task}_run-{run_label}_froi-{id}_mask.nii.gz"
     )
 
 
