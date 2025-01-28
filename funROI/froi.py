@@ -23,6 +23,25 @@ import logging
 
 
 class FROIConfig(dict):
+    """
+    Functional region of interest (fROI) configuration.
+
+    :param task: The task label.
+    :type task: str
+    :param contrasts: List of contrast labels.
+    :type contrasts: List[str]
+    :param threshold_type: The threshold type.
+        Options are 'none', 'bonferroni', 'fdr', 'n', 'percent'.
+    :type threshold_type: str
+    :param threshold_value: The threshold value.
+    :type threshold_value: float
+    :param parcels: The parcels configuration. If a string is provided, it is
+        assumed to be the path to the parcels file.
+    :type parcels: Union[str, ParcelsConfig]
+    :param conjunction_type: The conjunction type if multiple contrasts are
+        provided. Options are 'min', 'max', 'sum', 'prod', 'and', 'or', or None.
+    :type conjunction_type: str, optional
+    """
     @validate_arguments(
         threshold_type={"none", "bonferroni", "fdr", "n", "percent"},
         conjunction_type={"min", "max", "sum", "prod", "and", "or", None},

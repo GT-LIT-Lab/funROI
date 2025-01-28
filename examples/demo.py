@@ -169,9 +169,13 @@ for hemi in hemispheres:
 # Rendered results:
 # 
 # .. image:: parcels_left_lateral.png
-# .. image:: parcels_left_medial.png
+#   :width: 45%
 # .. image:: parcels_right_lateral.png
+#   :width: 45%
+# .. image:: parcels_left_medial.png
+#   :width: 45%
 # .. image:: parcels_right_medial.png
+#   :width: 45%
 
 
 ######################################################################
@@ -222,7 +226,9 @@ plt.savefig("./outputs/effect_size.png", dpi=300, bbox_inches="tight")
 # This confirms the validity of our approach.
 #
 # Rendered results:
+#
 # .. image:: effect_size.png
+#   :width: 45%
 # 
 # More interesting questions can be explored by applying the language
 # localizer to evaluate response magnitude for other conditions in other
@@ -288,6 +294,7 @@ plt.savefig("./outputs/spatial_correlation.png", dpi=300, bbox_inches="tight")
 # Rendered results:
 # 
 # .. image:: spatial_correlation.png
+#   :width: 45%
 
 
 ######################################################################
@@ -339,6 +346,7 @@ plt.savefig("./outputs/overlap.png", dpi=300, bbox_inches="tight")
 # The results visualized below illustrate the spatial overlap results:
 #
 # .. image:: overlap.png
+#   :width: 45%
 # 
 # They demonstrate that the within-subject definitions are more consistent
 # compared to across-subject definitions!

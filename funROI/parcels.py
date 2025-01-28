@@ -12,6 +12,16 @@ _get_parcels_folder = lambda: get_analysis_output_folder() / "parcels"
 
 
 class ParcelsConfig(dict):
+    """
+    Configuration for parcels.
+    
+    :param parcels_path: Path to the parcels image.
+    :type parcels_path: Union[str, Path]
+    :param labels_path: Path to the labels file. The labels file can be a JSON 
+        file mapping numerical labels to label names, or a text file with one
+        label name per line.
+    :type labels_path: Optional[Union[str, Path]]
+    """
     @ensure_paths("parcels_path", "labels_path")
     def __init__(
         self,

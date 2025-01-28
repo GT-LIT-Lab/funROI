@@ -3,17 +3,17 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-funROI documentation
+funROI Documentation
 ====================
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: API Reference
 
-   api/modules      
+   api/modules/     
 
 
-Featured examples
+Featured Examples
 -----------------
 
 .. grid::
@@ -34,6 +34,7 @@ Featured examples
         :columns: 12 4 4 4
 
         .. image:: auto_examples/parcels_left_lateral.png
+          :width: 200px
 
       .. grid-item::
         :columns: 12 8 8 8

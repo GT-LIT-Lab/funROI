@@ -40,5 +40,5 @@ html_static_path = ["_static"]
 sphinx_gallery_conf = {
     'examples_dirs': '../../examples',   # path to your example scripts
     'gallery_dirs': 'auto_examples',  # path to where to save gallery generated output
-    'copyfile_regex': r'figures/*\.png'
+    'copyfile_regex': r'.*\.png'
 }
