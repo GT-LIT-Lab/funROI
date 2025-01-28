@@ -212,6 +212,10 @@ effect_estimator = EffectEstimator(subjects=subjects_heldout, froi=froi)
 df_summary, df_detail = effect_estimator.run(
     task="LANGUAGE", effects=["story", "math"], return_results=True)
 
+######################################################################
+# Visualize:
+#
+
 plt.figure(figsize=(3,5))
 data = df_summary.groupby(["subject", "effect"]).mean().reset_index()
 sns.barplot(data=data, y="size", x="effect", hue="effect", errorbar="se")
@@ -276,6 +280,10 @@ df_between, _ = spcorr_estimator.run(
     return_results=True
 )
 
+######################################################################
+# Visualize:
+#
+
 df_math['Type'] = 'Math-Math'
 df_story['Type'] = 'Story-Story'
 df_between['Type'] = 'Story-Math'
@@ -331,6 +339,10 @@ for i, subject1 in enumerate(subjects_heldout):
     data.append(df[df['froi1'] == df['froi2']])
 
 data = pd.concat(data)
+
+######################################################################
+# Visualize:
+#
 
 data.loc[data['subject1'] == data['subject2'], 'Type'] = 'Within'
 data.loc[data['subject1'] != data['subject2'], 'Type'] = 'Between'
