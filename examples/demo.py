@@ -360,6 +360,8 @@ plt.savefig("./outputs/overlap.png", dpi=300, bbox_inches="tight")
 # .. image:: overlap.png
 #   :width: 45%
 # 
-# They demonstrate that the within-subject definitions are more consistent
-# compared to across-subject definitions!
+# They demonstrate that the language system defined within the same subject
+# using different runs has a higher overlap compared to the overlap between
+# different subjects - suggesting that the precise location of the language
+# system may vary across subjects!
 # 
