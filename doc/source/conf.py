@@ -22,7 +22,8 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
-    # 'sphinx_gallery.gen_gallery',
+    'sphinx_gallery.gen_gallery',
+    'sphinx_design'
 ]
 
 templates_path = ["_templates"]
@@ -34,3 +35,10 @@ exclude_patterns = ["build", "funROI/tests"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
+
+# Gallery configuration
+sphinx_gallery_conf = {
+    'examples_dirs': '../../examples',   # path to your example scripts
+    'gallery_dirs': 'auto_examples',  # path to where to save gallery generated output
+    'copyfile_regex': r'figures/*\.png'
+}

@@ -5,8 +5,6 @@ from ..parcels import ParcelsConfig, get_parcels
 from ..froi import FROIConfig, _get_froi_data, _get_orthogonalized_froi_data
 import numpy as np
 import pandas as pd
-import warnings
-import logging
 from .utils import AnalysisSaver
 
 
@@ -14,8 +12,6 @@ class OverlapEstimator(AnalysisSaver):
     """
     Estimate the overlap between two sets of parcels or fROIs.
 
-    :param subjects: List of subject labels.
-    :type subjects: List[str]
     :param kind: Kind of overlap to estimate. Options are 'overlap' and
         'dice'. Default is 'overlap'.
     :type kind: Optional[str]
@@ -28,11 +24,9 @@ class OverlapEstimator(AnalysisSaver):
     @validate_arguments(kind={"overlap", "dice"})
     def __init__(
         self,
-        subjects: Optional[List[str]] = None,
         kind: Optional[str] = "overlap",
         orthogonalization: Optional[str] = "all-but-one",
     ):
-        self.subjects = subjects
         self.kind = kind
         self.orthogonalization = orthogonalization
 
@@ -44,6 +38,8 @@ class OverlapEstimator(AnalysisSaver):
         self,
         froi1: Union[FROIConfig, str, ParcelsConfig],
         froi2: Union[FROIConfig, str, ParcelsConfig],
+        subject1: Optional[str] = None,
+        subject2: Optional[str] = None,
         run1: Optional[str] = None,
         run2: Optional[str] = None,
         return_results: Optional[bool] = False,
@@ -58,6 +54,12 @@ class OverlapEstimator(AnalysisSaver):
         :param froi2: fROI or parcels configuration for the second set of
             parcels or fROIs.
         :type froi2: Union[FROIConfig, str, ParcelsConfig]
+        :param subject1: Subject label for the first set of fROIs. Required if
+            fROIs are used.
+        :type subject1: str 
+        :param subject2: Subject label for the second set of fROIs. Required if
+            fROIs are used.
+        :type subject2: str
         :param run1: Run label for the first set of parcels or fROIs. If not
             specified, the run is determined by automatic orthogonalization.
         :type run1: Optional[str]
@@ -96,159 +98,152 @@ class OverlapEstimator(AnalysisSaver):
             if froi1_img is None:
                 raise ValueError("Parcels image 1 not found")
             froi1_data = froi1_img.get_fdata().flatten()[None, :]
+        else:
+            if subject1 is None:
+                raise ValueError("Subject label 1 is required for fROIs")
         is_parcels2 = not isinstance(self.froi2, FROIConfig)
         if is_parcels2:
             if froi2_img is None:
                 raise ValueError("Parcels image 2 not found")
             froi2_data = froi2_img.get_fdata().flatten()[None, :]
+        else:
+            if subject2 is None:
+                raise ValueError("Subject label 2 is required for fROIs")
 
-        if self.subjects is None:
-            if not is_parcels1 or not is_parcels2:
-                raise ValueError(
-                    "Subjects must be specified if fROIs are used"
-                )
-            self.subjects = [None]
-
-        data_summary = []
-        data_detail = []
-        for subject in self.subjects:
-            # Load the data
-            if is_parcels1 and is_parcels2:
-                froi1_run_labels, froi2_run_labels = ["parcels"], ["parcels"]
-            elif is_parcels1:
-                froi1_run_labels, froi2_run_labels = ["parcels"], ["all"]
-                froi2_data = _get_froi_data(
-                    subject, self.froi2, "all" if run2 is None else run2
-                )[None, :]
-            elif is_parcels2:
-                froi1_run_labels, froi2_run_labels = ["all"], ["parcels"]
-                froi1_data = _get_froi_data(
-                    subject, self.froi1, "all" if run1 is None else run1
-                )[None, :]
-            else:
-                okorth = _check_orthogonal(
-                    subject,
-                    self.froi1.task,
-                    self.froi1.contrasts,
-                    self.froi2.task,
-                    self.froi2.contrasts,
-                )
-                if self.run1 is not None and self.run2 is not None:
-                    froi1_run_labels, froi2_run_labels = [self.run1], [
-                        self.run2
-                    ]
-                    froi1_data = _get_froi_data(
-                        subject, self.froi1, self.run1
-                    )[None, :]
-                    froi2_data = _get_froi_data(
-                        subject, self.froi2, self.run2
-                    )[None, :]
-                elif okorth:
-                    froi1_run_labels, froi2_run_labels = ["all"], ["all"]
-                    froi1_data = _get_froi_data(subject, self.froi1, "all")[
-                        None, :
-                    ]
-                    froi2_data = _get_froi_data(subject, self.froi2, "all")[
-                        None, :
-                    ]
-                else:
-                    froi1_data, froi1_run_labels = (
-                        _get_orthogonalized_froi_data(
-                            subject, self.froi1, 1, self.orthogonalization
-                        )
-                    )
-                    if froi1_data is None:
-                        warnings.warn(
-                            f"Data not found for subject {subject}, fROI "
-                            f"{self.froi1} for the orthogonalization, skipping."
-                        )
-                        continue
-                    froi2_data, froi2_run_labels = (
-                        _get_orthogonalized_froi_data(
-                            subject, self.froi2, 2, self.orthogonalization
-                        )
-                    )
-                    if froi2_data is None:
-                        warnings.warn(
-                            f"Data not found for subject {subject}, fROI "
-                            f"{self.froi2} for the orthogonalization, skipping."
-                        )
-                        continue
-                    if self.orthogonalization == "all-but-one":
-                        # To resolve the issue of asymmetric orthogonalization
-                        froi1_data2, froi1_run_labels2 = (
-                            _get_orthogonalized_froi_data(
-                                subject, self.froi1, 2, self.orthogonalization
-                            )
-                        )
-                        if froi1_data2 is None:
-                            warnings.warn(
-                                f"Data not found for subject {subject}, fROI "
-                                f"{self.froi1} for the orthogonalization, "
-                                "skipping."
-                            )
-                            continue
-                        froi2_data2, froi2_run_labels2 = (
-                            _get_orthogonalized_froi_data(
-                                subject, self.froi2, 1, self.orthogonalization
-                            )
-                        )
-                        if froi2_data2 is None:
-                            warnings.warn(
-                                f"Data not found for subject {subject}, fROI "
-                                f"{self.froi2} for the orthogonalization, "
-                                "skipping."
-                            )
-                            continue
-                        froi1_data = np.concat([froi1_data, froi1_data2])
-                        froi2_data = np.concat([froi2_data, froi2_data2])
-                        froi1_run_labels = np.concat(
-                            [froi1_run_labels, froi1_run_labels2]
-                        )
-                        froi2_run_labels = np.concat(
-                            [froi2_run_labels, froi2_run_labels2]
-                        )
-
-            df_summary, df_detail = self._run(
-                froi1_data, froi2_data, self.kind
+        # Load the data
+        if is_parcels1 and is_parcels2:
+            froi1_run_labels, froi2_run_labels = ["parcels"], ["parcels"]
+        elif is_parcels1:
+            froi1_run_labels, froi2_run_labels = ["parcels"], ["all"]
+            froi2_data = _get_froi_data(
+                subject2, self.froi2, "all" if run2 is None else run2
+            )[None, :]
+        elif is_parcels2:
+            froi1_run_labels, froi2_run_labels = ["all"], ["parcels"]
+            froi1_data = _get_froi_data(
+                subject1, self.froi1, "all" if run1 is None else run1
+            )[None, :]
+        else:
+            okorth = (subject1 != subject2) or _check_orthogonal(
+                subject1,
+                self.froi1.task,
+                self.froi1.contrasts,
+                self.froi2.task,
+                self.froi2.contrasts,
             )
-            if not is_parcels1 or not is_parcels2:
-                df_detail["run1"] = df_detail["run"].apply(
-                    lambda x: froi1_run_labels[x]
+            if self.run1 is not None and self.run2 is not None:
+                froi1_run_labels, froi2_run_labels = [self.run1], [
+                    self.run2
+                ]
+                froi1_data = _get_froi_data(
+                    subject1, self.froi1, self.run1
+                )[None, :]
+                froi2_data = _get_froi_data(
+                    subject2, self.froi2, self.run2
+                )[None, :]
+            elif okorth:
+                froi1_run_labels, froi2_run_labels = ["all"], ["all"]
+                froi1_data = _get_froi_data(subject1, self.froi1, "all")[
+                    None, :
+                ]
+                froi2_data = _get_froi_data(subject2, self.froi2, "all")[
+                    None, :
+                ]
+            else:
+                froi1_data, froi1_run_labels = (
+                    _get_orthogonalized_froi_data(
+                        subject1, self.froi1, 1, self.orthogonalization
+                    )
                 )
-                df_detail["run2"] = df_detail["run"].apply(
-                    lambda x: froi2_run_labels[x]
+                if froi1_data is None:
+                    raise ValueError(
+                        f"Data not found for subject {subject1}, fROI "
+                        f"{self.froi1} for the orthogonalization, skipping."
+                    )
+                froi2_data, froi2_run_labels = (
+                    _get_orthogonalized_froi_data(
+                        subject2, self.froi2, 2, self.orthogonalization
+                    )
                 )
-            df_detail = df_detail.drop(columns=["run"])
-            if froi1_labels is not None:
-                df_summary["froi1"] = df_summary["froi1"].apply(
-                    lambda x: froi1_labels[x]
-                )
-                df_detail["froi1"] = df_detail["froi1"].apply(
-                    lambda x: froi1_labels[x]
-                )
-            if froi2_labels is not None:
-                df_summary["froi2"] = df_summary["froi2"].apply(
-                    lambda x: froi2_labels[x]
-                )
-                df_detail["froi2"] = df_detail["froi2"].apply(
-                    lambda x: froi2_labels[x]
-                )
-            if is_parcels1:
-                df_summary = df_summary.rename(columns={"froi1": "parcel1"})
-                df_detail = df_detail.rename(columns={"froi1": "parcel1"})
-            if is_parcels2:
-                df_summary = df_summary.rename(columns={"froi2": "parcel2"})
-                df_detail = df_detail.rename(columns={"froi2": "parcel2"})
-            if not is_parcels1 or not is_parcels2:
-                df_summary["subject"] = subject
-                df_detail["subject"] = subject
-            data_summary.append(df_summary)
-            data_detail.append(df_detail)
+                if froi2_data is None:
+                    raise ValueError(
+                        f"Data not found for subject {subject2}, fROI "
+                        f"{self.froi2} for the orthogonalization, skipping."
+                    )
+                if self.orthogonalization == "all-but-one":
+                    # To resolve the issue of asymmetric orthogonalization
+                    froi1_data2, froi1_run_labels2 = (
+                        _get_orthogonalized_froi_data(
+                            subject1, self.froi1, 2, self.orthogonalization
+                        )
+                    )
+                    if froi1_data2 is None:
+                        raise ValueError(
+                            f"Data not found for subject {subject1}, fROI "
+                            f"{self.froi1} for the orthogonalization, "
+                            "skipping."
+                        )
+                    froi2_data2, froi2_run_labels2 = (
+                        _get_orthogonalized_froi_data(
+                            subject2, self.froi2, 1, self.orthogonalization
+                        )
+                    )
+                    if froi2_data2 is None:
+                        raise ValueError(
+                            f"Data not found for subject {subject2}, fROI "
+                            f"{self.froi2} for the orthogonalization, "
+                            "skipping."
+                        )
+                    froi1_data = np.concat([froi1_data, froi1_data2])
+                    froi2_data = np.concat([froi2_data, froi2_data2])
+                    froi1_run_labels = np.concat(
+                        [froi1_run_labels, froi1_run_labels2]
+                    )
+                    froi2_run_labels = np.concat(
+                        [froi2_run_labels, froi2_run_labels2]
+                    )
+
+        df_summary, df_detail = self._run(
+            froi1_data, froi2_data, self.kind
+        )
+        if not is_parcels1 or not is_parcels2:
+            df_detail["run1"] = df_detail["run"].apply(
+                lambda x: froi1_run_labels[x]
+            )
+            df_detail["run2"] = df_detail["run"].apply(
+                lambda x: froi2_run_labels[x]
+            )
+        df_detail = df_detail.drop(columns=["run"])
+        if froi1_labels is not None:
+            df_summary["froi1"] = df_summary["froi1"].apply(
+                lambda x: froi1_labels[x]
+            )
+            df_detail["froi1"] = df_detail["froi1"].apply(
+                lambda x: froi1_labels[x]
+            )
+        if froi2_labels is not None:
+            df_summary["froi2"] = df_summary["froi2"].apply(
+                lambda x: froi2_labels[x]
+            )
+            df_detail["froi2"] = df_detail["froi2"].apply(
+                lambda x: froi2_labels[x]
+            )
+        if is_parcels1:
+            df_summary = df_summary.rename(columns={"froi1": "parcel1"})
+            df_detail = df_detail.rename(columns={"froi1": "parcel1"})
+        if is_parcels2:
+            df_summary = df_summary.rename(columns={"froi2": "parcel2"})
+            df_detail = df_detail.rename(columns={"froi2": "parcel2"})
+        if not is_parcels1:
+            df_summary["subject1"] = subject1
+            df_detail["subject1"] = subject1
+        if not is_parcels2:
+            df_summary["subject2"] = subject2
+            df_detail["subject2"] = subject2
 
         # Save and return the results
-        self._data_summary = pd.concat(data_summary)
-        self._data_detail = pd.concat(data_detail)
+        self._data_summary = df_summary
+        self._data_detail = df_detail
         new_overlap_info = pd.DataFrame(
             {
                 "froi1": [self.froi1],

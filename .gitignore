@@ -3,7 +3,8 @@
 tests
 
 # Demo data
-funROI/notebooks/data
+notebooks/data
+pandoc*
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks
@@ -95,7 +96,8 @@ instance/
 .scrapy
 
 # Sphinx documentation
-docs/_build/
+doc/build/
+doc/source/auto_examples/
 
 # PyBuilder
 .pybuilder/

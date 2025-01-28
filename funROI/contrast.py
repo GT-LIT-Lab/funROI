@@ -148,7 +148,10 @@ def _get_contrast_data(
     )
     if not contrast_img_path.exists():
         return None
-    return load_img(contrast_img_path).get_fdata().flatten()
+    dat = load_img(contrast_img_path).get_fdata().flatten()
+    if type == "p":
+        dat[dat == 0] = np.nan
+    return dat
 
 
 def _get_design_matrix(subject: str, task: str) -> pd.DataFrame:
@@ -158,7 +161,7 @@ def _get_design_matrix(subject: str, task: str) -> pd.DataFrame:
     design_matrix_path = _get_design_matrix_path(subject, task)
     if not design_matrix_path.exists():
         return None
-    return pd.read_csv(design_matrix_path)
+    return pd.read_csv(design_matrix_path, index_col=0)
 
 
 def _check_orthogonal(
