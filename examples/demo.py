@@ -232,7 +232,7 @@ plt.savefig("./outputs/effect_size.png", dpi=300, bbox_inches="tight")
 # Rendered results:
 #
 # .. image:: effect_size.png
-#   :width: 45%
+#   :height: 300px
 # 
 # More interesting questions can be explored by applying the language
 # localizer to evaluate response magnitude for other conditions in other
@@ -302,7 +302,7 @@ plt.savefig("./outputs/spatial_correlation.png", dpi=300, bbox_inches="tight")
 # Rendered results:
 # 
 # .. image:: spatial_correlation.png
-#   :width: 45%
+#   :height: 300px
 
 
 ######################################################################
@@ -358,7 +358,7 @@ plt.savefig("./outputs/overlap.png", dpi=300, bbox_inches="tight")
 # The results visualized below illustrate the spatial overlap results:
 #
 # .. image:: overlap.png
-#   :width: 45%
+#   :height: 300px
 # 
 # They demonstrate that the language system defined within the same subject
 # using different runs has a higher overlap compared to the overlap between
