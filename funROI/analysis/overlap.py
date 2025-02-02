@@ -41,8 +41,7 @@ class OverlapEstimator(AnalysisSaver):
         subject1: Optional[str] = None,
         subject2: Optional[str] = None,
         run1: Optional[str] = None,
-        run2: Optional[str] = None,
-        return_results: Optional[bool] = False,
+        run2: Optional[str] = None
     ):
         """
         Run the overlap estimation. The results are stored in the analysis
@@ -66,11 +65,8 @@ class OverlapEstimator(AnalysisSaver):
         :param run2: Run label for the second set of parcels or fROIs. If not
             specified, the run is determined by automatic orthogonalization.
         :type run2: Optional[str]
-        :param return_results: Whether to return the results in addition to
-            saving them. Default is False.
-        :type return_results: Optional[bool]
 
-        :return: If return_results is True, the results are also returned: the
+        :return: the results are returned as a tuple of two dataframes: the
             overlap estimates averaged across runs, and the overlap estimates
             detailed by run.
         :rtype: Optional[Tuple[pd.DataFrame, pd.DataFrame]]
@@ -255,8 +251,7 @@ class OverlapEstimator(AnalysisSaver):
             }
         )
         self._save(new_overlap_info)
-        if return_results:
-            return self._data_summary, self._data_detail
+        return self._data_summary, self._data_detail
 
     @staticmethod
     def _run(

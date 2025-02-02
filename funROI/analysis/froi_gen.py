@@ -42,15 +42,14 @@ class FROIGenerator:
         self._data = []
 
     def run(
-        self, return_results: Optional[bool] = False
+        self
     ) -> Optional[List[Tuple[str, Nifti1Image]]]:
         """
         Run the fROI generation. The results are stored in the analysis output
         folder.
 
-        :return: If return_results is True, the results are also returned as a
-            list of tuples, where each tuple contains the subject label and the
-            FROI map.
+        :return: the results are returned as a list of tuples, where each tuple
+            contains the subject label and the FROI map.
         :rtype: Optional[List[Tuple[str, Nifti1Image]]]
         """
         data = []
@@ -75,8 +74,7 @@ class FROIGenerator:
         self.subjects = [dat[0] for dat in data]
         self._data = [dat[1] for dat in data]
 
-        if return_results:
-            return data
+        return data
 
     def select(
         self,

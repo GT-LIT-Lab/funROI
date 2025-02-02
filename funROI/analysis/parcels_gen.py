@@ -155,13 +155,12 @@ class ParcelsGenerator:
         self._data.extend(new_data)
         self.configs.append({"subjects": subjects, "froi": froi})
 
-    def run(self, return_results: Optional[bool] = False) -> Nifti1Image:
+    def run(self) -> Nifti1Image:
         """
         Run the parcels generation. Both the generated parcels and the filtered
         parcels are stored in the analysis output folder.
 
-        :return: If return_results is True, a labelled image of the parcels is
-            returned.
+        :return: a labelled image of the parcels is returned.
         :rtype: Nifti1Image
         """
         binary_masks = [np.mean(dat, axis=0) > 0.5 for dat in self._data]
@@ -184,8 +183,7 @@ class ParcelsGenerator:
 
         self._save()
 
-        if return_results:
-            return Nifti1Image(self.parcels, self.img_affine)
+        return Nifti1Image(self.parcels, self.img_affine)
 
     @classmethod
     def _run(
@@ -243,15 +241,13 @@ class ParcelsGenerator:
     def filter(
         self,
         overlap_thr_roi: Optional[float] = 0,
-        min_voxel_size: Optional[int] = 0,
-        return_results: Optional[bool] = False,
+        min_voxel_size: Optional[int] = 0
     ) -> Nifti1Image:
         """
         Filter the parcels with new filtering parameters. The filtered results
         are stored in the analysis output folder.
 
-        :return: If return_results is True, a labelled image of the filtered
-            parcels is returned.
+        :return: a labelled image of the filtered parcels is returned.
         :rtype: Nifti1Image
 
         :raises RuntimeError: If the parcels have not been generated yet.
@@ -288,8 +284,7 @@ class ParcelsGenerator:
 
             self._save()
 
-        if return_results:
-            return Nifti1Image(self.parcels, self.img_affine)
+        return Nifti1Image(self.parcels, self.img_affine)
 
     @classmethod
     def _filter(

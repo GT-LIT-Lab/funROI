@@ -53,8 +53,7 @@ class EffectEstimator(AnalysisSaver):
     def run(
         self,
         task: str,
-        effects: List[str],
-        return_results: Optional[bool] = False,
+        effects: List[str]
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Run the effect estimation. The results are stored in the analysis
@@ -64,10 +63,8 @@ class EffectEstimator(AnalysisSaver):
         :type task: str
         :param effects: List of effect labels.
         :type effects: List[str]
-        :param return_results: Whether to return the results.
-        :type return_results: Optional[bool]
 
-        :return: If return_results is True, the results are also returned: the
+        :return: The results are returned as a tuple of two dataframes: the
             effect estimates averaged across runs, and the effect estimates
             detailed by run.
         :rtype: Tuple[pd.DataFrame, pd.DataFrame]
@@ -185,8 +182,7 @@ class EffectEstimator(AnalysisSaver):
         )
         self._save(new_effects_info)
 
-        if return_results:
-            return self._data_summary, self._data_detail
+        return self._data_summary, self._data_detail
 
     @staticmethod
     def _run(

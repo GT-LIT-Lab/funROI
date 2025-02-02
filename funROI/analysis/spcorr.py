@@ -66,7 +66,6 @@ class SpatialCorrelationEstimator(AnalysisSaver):
         run_froi: Optional[str] = None,
         run1: Optional[str] = None,
         run2: Optional[str] = None,
-        return_results: Optional[bool] = False,
     ):
         """
         Run the spatial correlation estimation. The results are stored in the
@@ -89,11 +88,8 @@ class SpatialCorrelationEstimator(AnalysisSaver):
         :param run2: Run label for the second contrast. If not specified, the
             run is determined by automatic orthogonalization.
         :type run2: Optional[str]
-        :param return_results: Whether to return the results in addition to
-            saving them. Default is False.
-        :type return_results: Optional[bool]
 
-        :return: If return_results is True, the results are also returned:
+        :return: the results are returned as a tuple of two dataframes: 
             the spatial correlation estimates averaged across runs, and
             the spatial correlation estimates detailed by run.
         :rtype: Optional[Tuple[pd.DataFrame, pd.DataFrame]]
@@ -319,8 +315,7 @@ class SpatialCorrelationEstimator(AnalysisSaver):
         )
         self._save(new_effects_info)
 
-        if return_results:
-            return self._data_summary, self._data_detail
+        return self._data_summary, self._data_detail
 
     @staticmethod
     def _get_orthogonalized_group(

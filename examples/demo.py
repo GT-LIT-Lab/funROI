@@ -32,11 +32,23 @@ to access the HCP dataset. Follow these steps:
    file. You can find detailed instructions in the `AWS CLI user
    guide <https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-files.html>`__.
 
+3. Run the following code to download the data
+
 """
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from nilearn.plotting import plot_surf_roi
+from nilearn.datasets import fetch_surf_fsaverage
+from nilearn.surface import vol_to_surf
+import funROI
+from funROI.datasets import hcp
+from funROI.first_level.nilearn import run_first_level
+from funROI.analysis import ParcelsGenerator
+from funROI.analysis import EffectEstimator
+from funROI.analysis import SpatialCorrelationEstimator
+from funROI.analysis import OverlapEstimator
 
 subjects = [
     "211417", "164030", "480141", "248238", "214221", "381038", "117021", 
@@ -51,7 +63,6 @@ subjects_heldout = [
 ]
     
 
-from funROI.datasets import hcp
 hcp.fetch_language_data("./data", subjects + subjects_heldout)
 
 
@@ -75,12 +86,10 @@ hcp.fetch_language_data("./data", subjects + subjects_heldout)
 # demonstrate how to configure and run a first-level model using funROI.
 # 
 
-import funROI
 funROI.set_bids_data_folder('./data/bids')
 funROI.set_bids_preprocessed_folder('./data/bids') # using HCP preprocessed data
 funROI.set_bids_deriv_folder('./data/bids/derivatives')
 
-from funROI.first_level.nilearn import run_first_level
 run_first_level(
     task = 'LANGUAGE',
     subjects = subjects + subjects_heldout,
@@ -101,7 +110,7 @@ run_first_level(
 
 
 ######################################################################
-# In this part, we will demonstrate how to generate parcels for the
+# In this part, we will demonstrate how to generate parcels (brain masks) for the
 # language system using the 30-subject sample. We will focus on the
 # story-math contrast to isolate regions of the brain involved in language
 # processing. These group-level parcels will later serve as spatial
@@ -111,7 +120,6 @@ run_first_level(
 
 funROI.set_analysis_output_folder("./data/analysis")
 
-from funROI.analysis import ParcelsGenerator
 parcels_generator = ParcelsGenerator(
     parcels_name="Language",
     smoothing_kernel_size=8,
@@ -135,9 +143,6 @@ parcels = parcels_generator.run(return_results=True)
 # brain surface for better visualization:
 # 
 
-from nilearn.plotting import plot_surf_roi
-from nilearn.datasets import fetch_surf_fsaverage
-from nilearn.surface import vol_to_surf
 fsaverage = fetch_surf_fsaverage('fsaverage5')
 
 surf_data = {
@@ -200,7 +205,6 @@ for hemi in hemispheres:
 # independent from subjects for generating language parcels.
 # 
 
-from funROI.analysis import EffectEstimator
 froi = funROI.FROIConfig(
     task="LANGUAGE",
     contrasts=["story-math"],
@@ -262,7 +266,6 @@ plt.savefig("./outputs/effect_size.png", dpi=300, bbox_inches="tight")
 # fROIs for a more refined analysis of spatial similarity.
 # 
 
-from funROI.analysis import SpatialCorrelationEstimator
 spcorr_estimator = SpatialCorrelationEstimator(
     subjects=subjects_heldout,
     froi="./data/analysis/parcels/Language/Language_0000.nii.gz"
@@ -319,8 +322,9 @@ plt.savefig("./outputs/spatial_correlation.png", dpi=300, bbox_inches="tight")
 # (10% top voxels), across subjects and within subjects using different
 # runs.
 # 
+# We support two overlap measurements: Dice coefficient and overlap coefficient.
+# The default is the overlap coefficient, which is what we will use now.
 
-from funROI.analysis import OverlapEstimator
 overlap_estimator = OverlapEstimator()
 
 data = []
