@@ -1,3 +1,3 @@
 from . import hcp
 
-__all__ = ["fetch_language_sample"]
+__all__ = ["fetch_data"]

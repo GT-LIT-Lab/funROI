@@ -110,14 +110,26 @@ class OverlapEstimator(AnalysisSaver):
         if is_parcels1 and is_parcels2:
             froi1_run_labels, froi2_run_labels = ["parcels"], ["parcels"]
         elif is_parcels1:
-            froi1_run_labels, froi2_run_labels = ["parcels"], ["all"]
+            if run2 is None:
+                run2 = "all"
+            froi1_run_labels, froi2_run_labels = ["parcels"], [run2]
             froi2_data = _get_froi_data(
-                subject2, self.froi2, "all" if run2 is None else run2
+                subject2, self.froi2, run2
             )[None, :]
         elif is_parcels2:
-            froi1_run_labels, froi2_run_labels = ["all"], ["parcels"]
+            if run1 is None:
+                run1 = "all"
+            froi1_run_labels, froi2_run_labels = ["all"], [run1]
             froi1_data = _get_froi_data(
-                subject1, self.froi1, "all" if run1 is None else run1
+                subject1, self.froi1, run1
+            )[None, :]
+        elif run1 is not None and run2 is not None:
+            froi1_run_labels, froi2_run_labels = [run1], [run2]
+            froi1_data = _get_froi_data(
+                subject1, self.froi1, run1
+            )[None, :]
+            froi2_data = _get_froi_data(
+                subject2, self.froi2, run2
             )[None, :]
         else:
             okorth = (subject1 != subject2) or _check_orthogonal(

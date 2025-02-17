@@ -30,10 +30,6 @@ IMAGE_SUFFIXES = {
 
 
 def _compute_contrast(sub, task, run, model, contrast_name, contrast_vector):
-    print("contrast_name=", contrast_name)
-    print("contrast_vector=", contrast_vector)
-    print("run=", run)
-    print()
     contrast_imgs = model.compute_contrast(
         np.array(contrast_vector), stat_type="t", output_type="all"
     )

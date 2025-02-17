@@ -124,7 +124,12 @@ class ParcelsGenerator:
             froi_runs = _get_froi_runs(subject, froi)
             subject_data = []
             for run in froi_runs:
-                run = f"orth{run}"
+                if len(froi_runs) == 2:
+                    runs_ = froi_runs.copy()
+                    runs_.remove(run)
+                    run = runs_[0]
+                else:
+                    run = f"orth{run}"
                 froi_pth = _get_froi_path(subject, run, froi)
                 if not froi_pth.exists():
                     _create_froi(subject, froi, run)
@@ -362,6 +367,29 @@ class ParcelsGenerator:
         if not overlap_map_pth.exists():
             overlap_map_img = Nifti1Image(self.overlap_map, self.img_affine)
             overlap_map_img.to_filename(overlap_map_pth)
+
+        parcel_info_pth = (
+            self._get_analysis_parcels_folder(self.parcels_name)
+            / "parcel_info.csv"
+        )
+        if not parcel_info_pth.exists():
+            parcel_info_data = []
+            for parcel in np.unique(self.parcels):
+                if parcel == 0:
+                    continue
+                parcel_mask = self.parcels == parcel
+                parcel_size = np.sum(parcel_mask)
+                subject_coverage = np.zeros(len(self._data))
+                for subjecti, data in enumerate(self._data):
+                    subject_coverage[subjecti] = (
+                        self._harmonic_mean(
+                            np.sum(data[:, parcel_mask.flatten()], axis=1)
+                        )
+                        > 0
+                    )
+                parcel_info_data.append([parcel, parcel_size, np.mean(subject_coverage)])
+            parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size", "roi_overlap"])
+            parcel_info.to_csv(parcel_info_pth, index=False)
 
         base_pattern = f"{self.parcels_name}_*.nii.gz"
         matched = list(

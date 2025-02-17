@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from . import get_analysis_output_folder
 from .utils import ensure_paths
+import pandas as pd
 
 _get_parcels_folder = lambda: get_analysis_output_folder() / "parcels"
 
@@ -46,6 +47,23 @@ class ParcelsConfig(dict):
             and self.labels_path == other.labels_path
         )
 
+    @staticmethod
+    def from_analysis_output(name: str, overlap_thr_roi: float, min_voxel_size: int):
+        """
+        Create a ParcelsConfig object from the analysis output folder.
+        """
+        parcels_info = _get_parcels_folder() / name / 'filtering_info.csv'
+        if not parcels_info.exists():
+            raise ValueError(f"Parcels info file not found: {parcels_info}")
+        parcels_info = pd.read_csv(parcels_info).set_index('id')
+        id = parcels_info[(parcels_info['overlap_thr_roi'] == overlap_thr_roi) & (parcels_info['min_voxel_size'] == min_voxel_size)].index[0]
+        parcels_path = _get_parcels_folder() / name / f"{name}_{id:04d}.nii.gz"
+        if os.path.exists(_get_parcels_folder() / name / f"{name}_{id:04d}.json"):
+            labels_path = _get_parcels_folder() / name / f"{name}_{id:04d}.json"
+        else:
+            labels_path = None
+        return ParcelsConfig(parcels_path, labels_path)
+        
 
 def get_parcels(
     parcels: Union[str, ParcelsConfig]

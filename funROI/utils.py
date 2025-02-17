@@ -56,10 +56,13 @@ def _get_orthogonalized_run_labels(
     run_labels: List[str], group: int, orthogonalization: str
 ):
     if orthogonalization == "all-but-one":
-        if group == 1:
-            labels = [f"orth{run}" for run in run_labels]
+        if len(run_labels) == 2:
+            labels = run_labels if group == 2 else run_labels[::-1]
         else:
-            labels = run_labels
+            if group == 1:
+                labels = [f"orth{run}" for run in run_labels]
+            else:
+                labels = run_labels
     else:
         if group == 1:
             labels = ["odd", "even"]
