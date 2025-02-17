@@ -296,7 +296,7 @@ plt.xlabel("Effect")
 #
 # Rendered results:
 #
-# .. image:: effect_size.png
+# .. image:: effect_size_viz.png
 #   :height: 300px
 # 
 # More interesting questions can be explored by applying the language localizer 
@@ -364,7 +364,7 @@ plt.xlabel("Comparison Type")
 ######################################################################
 # Rendered results:
 # 
-# .. image:: spatial_correlation.png
+# .. image:: spatial_correlation_viz.png
 #   :height: 300px
 
 
@@ -424,7 +424,7 @@ plt.xlabel("Comparison Type")
 ######################################################################
 # The results visualized below illustrate the spatial overlap results:
 #
-# .. image:: overlap.png
+# .. image:: overlap_viz.png
 #   :height: 300px
 # 
 # They demonstrate that the within-subject definitions are more consistent 

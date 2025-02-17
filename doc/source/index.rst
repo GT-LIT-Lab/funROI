@@ -79,7 +79,7 @@ Demo
       .. grid-item::
         :columns: 12 4 4 4
 
-        .. image:: auto_examples/parcels_left_lateral.png
+        .. image:: auto_examples/parcels_left_lateral_viz.png
           :width: 200px
 
       .. grid-item::
