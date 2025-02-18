@@ -42,12 +42,14 @@ class FROIGenerator:
         self._data = []
 
     def run(
-        self
+        self, save: Optional[bool] = True
     ) -> Optional[List[Tuple[str, Nifti1Image]]]:
         """
         Run the fROI generation. The results are stored in the analysis output
         folder.
 
+        :param save: Whether to save the results to the analysis output folder.
+        :type save: Optional[bool]
         :return: the results are returned as a list of tuples, where each tuple
             contains the subject label and the FROI map.
         :rtype: Optional[List[Tuple[str, Nifti1Image]]]
@@ -64,11 +66,13 @@ class FROIGenerator:
                     continue
 
             froi_img = load_img(froi_pth)
-            # Save the the output directory
-            froi_pth = self._get_analysis_froi_path(
-                subject, self.run_label, self.froi, create=True
-            )
-            froi_img.to_filename(froi_pth)
+
+            if save:
+                froi_pth = self._get_analysis_froi_path(
+                    subject, self.run_label, self.froi, create=True
+                )
+                froi_img.to_filename(froi_pth)
+            
             data.append((subject, froi_img))
 
         self.subjects = [dat[0] for dat in data]

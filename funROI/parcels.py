@@ -127,3 +127,80 @@ def _get_external_parcels(parcels: ParcelsConfig) -> Tuple[Nifti1Image, dict]:
             if label != 0:
                 label_dict[int(label)] = int(label)
     return parcels_img, label_dict
+
+
+def label_parcel(parcels_img: Nifti1Image, 
+                 label_dict: dict, 
+                 label: int) -> Tuple[Nifti1Image, str]:
+    """
+    Label a parcel.
+    """
+    if label not in label_dict:
+        raise ValueError(f"Label {label} not found in label dictionary.")
+    label_name = label_dict[label]
+    return math_img("img == {}".format(label), img=parcels_img), label_name
+
+
+def merge_parcels(parcels_img: Nifti1Image, 
+                  label_dict: dict,
+                  label1: Union[int, str],
+                  label2: Union[int, str],
+                  new_label: Optional[str] = None) -> Tuple[Nifti1Image, dict]:
+    """
+    Merge two parcels.
+    """
+
+    if new_label in label_dict.values():
+        raise ValueError(f"New label {new_label} already exists in label dictionary.")
+
+    if isinstance(label1, str):
+        label1 = {v: k for k, v in label_dict.items()}[label1]
+    if isinstance(label2, str):
+        label2 = {v: k for k, v in label_dict.items()}[label2]
+    parcels_data = _merge_parcels(parcels_img.get_fdata(), label1, label2)
+    parcels_img = Nifti1Image(parcels_data, parcels_img.affine, parcels_img.header)
+
+    label_dict.pop(label1, None)
+    label_dict.pop(label2, None)
+    if new_label:
+        label_dict[new_label] = new_label
+
+    return parcels_img, label_dict
+
+
+def _merge_parcels(data: np.ndarray, x: int, y: int) -> np.ndarray:
+    if len(data.shape) != 3:
+        raise ValueError("Data must be 3D.")
+    if x == y: 
+        return data
+    
+    neighbors26 = np.zeros((26, data.shape[0], data.shape[1], data.shape[2]))
+    ni = 0
+    for dx in range(-1, 2):
+        for dy in range(-1, 2):
+            for dz in range(-1, 2):
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                neighbors26[ni] = np.roll(data, dx, axis=0)
+                neighbors26[ni] = np.roll(neighbors26[ni], dy, axis=1)
+                neighbors26[ni] = np.roll(neighbors26[ni], dz, axis=2)
+                ni += 1
+
+    mask = np.all(np.isin(neighbors26, [0, x, y]), axis=0) & \
+        np.any(neighbors26 == x, axis=0) & \
+        np.any(neighbors26 == y, axis=0)
+    data[mask] = x
+    data[data == y] = x
+
+    return data
+
+
+def save_parcels(parcels_img: Nifti1Image, label_dict: dict, name: str):
+    """
+    Save parcels image and labels.
+    """
+    parcels_path = _get_parcels_folder() / f"{name}.nii.gz"
+    parcels_labels_path = _get_parcels_folder() / f"{name}.json"
+    parcels_img.to_filename(parcels_path)
+    with open(parcels_labels_path, "w") as f:
+        json.dump(label_dict, f)
