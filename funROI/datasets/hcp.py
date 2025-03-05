@@ -37,8 +37,9 @@ def _list_s3_objects(s3_client, bucket_name, prefix):
 def _download_file(s3_client, bucket_name, s3_key, local_path):
     try:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        s3_client._download_file(bucket_name, s3_key, local_path)
+        s3_client.download_file(bucket_name, s3_key, local_path)
     except Exception as e:
+        print(e)
         print(f"Missing or failed: {s3_key}")
 
 
