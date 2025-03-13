@@ -66,7 +66,7 @@ def _convert_to_bids(data_dir, bids_dir, subject, task):
     runs = (data_dir / subject / "MNINonLinear" / "Results").iterdir()
     run_i = 1
     for run_folder in runs:
-        if "tfMRI" not in run_folder.name:
+        if f"tfMRI_{task}" not in run_folder.name:
             continue
         run_task = run_folder.name.split("_")[1]
         run_filename = run_folder.name.split("_", 1)[1]
@@ -173,5 +173,5 @@ def fetch_data(data_dir, task, subjects):
         except Exception as e:
             print(f"Error processing {subject}: {e}")
     
-    shutil.rmtree(data_dir / "HCP_1200")
+    # shutil.rmtree(data_dir / "HCP_1200")
 

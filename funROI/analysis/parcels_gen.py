@@ -63,6 +63,7 @@ class ParcelsGenerator:
         self._data = []
         self.img_shape = None
         self.img_affine = None
+        self.parcel_info = None
 
     @validate_arguments(
         p_threshold_type={"none", "bonferroni", "fdr"},
@@ -160,6 +161,69 @@ class ParcelsGenerator:
         self._data.extend(new_data)
         self.configs.append({"subjects": subjects, "froi": froi})
 
+    @classmethod
+    def _run_fast(
+        cls,
+        parcels_name: str,
+        smoothing_kernel_size: Optional[Union[float, List[float]]] = 8,
+        overlap_thr_vox: Optional[float] = 0.1,
+        use_spm_smooth: Optional[bool] = True,
+    ) -> "ParcelsGenerator":
+        parcel_gen = ParcelsGenerator(
+            parcels_name,
+            smoothing_kernel_size,
+            overlap_thr_vox,
+            use_spm_smooth=use_spm_smooth,
+        )
+        # Run parcel generation with a pre-calculated overlapping map.
+        # Use this method only if you are sure what you are doing.
+
+        parcel_info_pth = (
+            cls._get_analysis_parcels_folder(parcels_name)
+            / f"parcels-{parcels_name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_info.csv"
+        )
+        parcels_pth = (
+            cls._get_analysis_parcels_folder(parcels_name)
+            / f"parcels-{parcels_name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-0_sz-0.nii.gz"
+        )
+
+        if parcel_info_pth.exists() and parcels_pth.exists():
+            parcel_gen.parcel_info = pd.read_csv(parcel_info_pth)
+            parcel_gen.parcels = load_img(parcels_pth).get_fdata()
+        else:
+            overlap_map_pth = (
+                cls._get_analysis_parcels_folder(parcels_name)
+                / f"parcels-{parcels_name}_overlap.nii.gz"
+            )
+            if not overlap_map_pth.exists():
+                raise FileNotFoundError(
+                    "Overlapping map not found. Please double-check the "
+                    "parcels name and configurations."
+                )
+            overlap_map = load_img(overlap_map_pth)
+            parcel_gen.overlap_map = overlap_map.get_fdata()
+            parcel_gen.img_shape = overlap_map.shape
+            parcel_gen.img_affine = overlap_map.affine
+            _, parcel_gen.parcels = cls._run(
+                parcel_gen.overlap_map[None, ...],
+                parcel_gen.img_shape,
+                parcel_gen.img_affine,
+                smoothing_kernel_size,
+                overlap_thr_vox,
+                use_spm_smooth,
+            )
+
+            parcel_info_data = []
+            for parcel in np.unique(parcel_gen.parcels):
+                if parcel == 0:
+                    continue
+                parcel_mask = parcel_gen.parcels == parcel
+                parcel_size = np.sum(parcel_mask)
+                parcel_info_data.append([parcel, parcel_size])
+            parcel_gen.parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size"])
+            parcel_gen._save()
+
+
     def run(self) -> Nifti1Image:
         """
         Run the parcels generation. Both the generated parcels and the filtered
@@ -168,20 +232,39 @@ class ParcelsGenerator:
         :return: a labelled image of the parcels is returned.
         :rtype: Nifti1Image
         """
-        binary_masks = [np.mean(dat, axis=0) > 0.5 for dat in self._data]
-        self.overlap_map, self.parcels = self._run(
-            binary_masks,
-            self.img_shape,
-            self.img_affine,
-            self.smoothing_kernel_size,
-            self.overlap_thr_vox,
-            self.use_spm_smooth,
-        )
+        if self.parcel_info is None:
+            binary_masks = [np.mean(dat, axis=0) > 0.5 for dat in self._data]
+            self.overlap_map, self.parcels = self._run(
+                binary_masks,
+                self.img_shape,
+                self.img_affine,
+                self.smoothing_kernel_size,
+                self.overlap_thr_vox,
+                self.use_spm_smooth,
+            )
+
+            parcel_info_data = []
+            for parcel in np.unique(self.parcels):
+                if parcel == 0:
+                    continue
+                parcel_mask = self.parcels == parcel
+                parcel_size = np.sum(parcel_mask)
+                subject_coverage = np.zeros(len(self._data))
+                for subjecti, data in enumerate(self._data):
+                    subject_coverage[subjecti] = (
+                        self._harmonic_mean(
+                            np.sum(data[:, parcel_mask.flatten()], axis=1)
+                        )
+                        > 0
+                    )
+                parcel_info_data.append([parcel, parcel_size, np.mean(subject_coverage)])
+            self.parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size", "roi_overlap"])
+            self._save()
 
         if self.min_voxel_size != 0 or self.overlap_thr_roi != 0:
             self.parcels = self._filter(
                 self.parcels,
-                self._data,
+                self.parcel_info,
                 self.overlap_thr_roi,
                 self.min_voxel_size,
             )
@@ -295,7 +378,7 @@ class ParcelsGenerator:
     def _filter(
         cls,
         parcels: np.ndarray,
-        binary_masks_by_run: List[np.ndarray],
+        parcel_info: pd.DataFrame,
         overlap_thr_roi: float,
         min_voxel_size: int,
     ) -> np.ndarray:
@@ -304,9 +387,9 @@ class ParcelsGenerator:
 
         :param parcels: Parcels to filter.
         :type parcels: np.ndarray
-        :param binary_masks_by_run: List of binary masks for each subject. Each
-            mask is of shape (n_runs, n_voxels).
-        :type binary_masks_by_run: List[np.ndarray]
+        :param parcel_info: DataFrame containing information about the parcels.
+            Columns: id, size, roi_overlap.
+        :type parcel_info: pd.DataFrame
         :param overlap_thr_roi: Minimum overlap proportion for a parcel to be
             included in the final set of parcels.
         :type overlap_thr_roi: float
@@ -322,47 +405,29 @@ class ParcelsGenerator:
             if parcel == 0:
                 continue
             parcel_mask = parcels == parcel
-            parcel_size = np.sum(parcel_mask)
-            if parcel_size < min_voxel_size:
+            if parcel_info.loc[parcel_info["id"] == parcel, "roi_overlap"].values[0] < overlap_thr_roi:
                 filtered_parcels[parcel_mask] = 0
-            else:
-                subject_coverage = np.zeros(len(binary_masks_by_run))
-                for subjecti, data in enumerate(binary_masks_by_run):
-                    subject_coverage[subjecti] = (
-                        cls._harmonic_mean(
-                            np.sum(data[:, parcel_mask.flatten()], axis=1)
-                        )
-                        > 0
-                    )
-                if np.mean(subject_coverage) < overlap_thr_roi:
-                    filtered_parcels[parcel_mask] = 0
+            if parcel_info.loc[parcel_info["id"] == parcel, "size"].values[0] < min_voxel_size:
+                filtered_parcels[parcel_mask] = 0
         return filtered_parcels
 
     @staticmethod
     def _get_analysis_parcels_folder(parcels_name: str) -> Path:
-        return get_analysis_output_folder() / f"parcels" / parcels_name
+        return get_analysis_output_folder() / f"parcels" / f"parcels-{parcels_name}"
 
     def _save(self):
         parcels_info_pth = (
             self._get_analysis_parcels_folder(self.parcels_name)
-            / "parcels_info.json"
+            / f"parcels-{self.parcels_name}_config.json"
         )
         parcels_info_pth.parent.mkdir(parents=True, exist_ok=True)
         if not parcels_info_pth.exists():
             with open(parcels_info_pth, "w") as f:
-                json.dump(
-                    {
-                        "smoothing_kernel_size": self.smoothing_kernel_size,
-                        "overlap_thr_vox": self.overlap_thr_vox,
-                        "use_spm_smooth": self.use_spm_smooth,
-                        "configs": self.configs,
-                    },
-                    f,
-                )
+                json.dump({"configs": self.configs}, f)
 
         overlap_map_pth = (
             self._get_analysis_parcels_folder(self.parcels_name)
-            / "overlap_map.nii.gz"
+            / f"parcels-{self.parcels_name}_overlap.nii.gz"
         )
         if not overlap_map_pth.exists():
             overlap_map_img = Nifti1Image(self.overlap_map, self.img_affine)
@@ -370,73 +435,18 @@ class ParcelsGenerator:
 
         parcel_info_pth = (
             self._get_analysis_parcels_folder(self.parcels_name)
-            / "parcel_info.csv"
+            / f"parcels-{self.parcels_name}_sm-{self.smoothing_kernel_size}_spmsmooth-{self.use_spm_smooth}_voxthres-{self.overlap_thr_vox}_info.csv"
         )
         if not parcel_info_pth.exists():
-            parcel_info_data = []
-            for parcel in np.unique(self.parcels):
-                if parcel == 0:
-                    continue
-                parcel_mask = self.parcels == parcel
-                parcel_size = np.sum(parcel_mask)
-                subject_coverage = np.zeros(len(self._data))
-                for subjecti, data in enumerate(self._data):
-                    subject_coverage[subjecti] = (
-                        self._harmonic_mean(
-                            np.sum(data[:, parcel_mask.flatten()], axis=1)
-                        )
-                        > 0
-                    )
-                parcel_info_data.append([parcel, parcel_size, np.mean(subject_coverage)])
-            parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size", "roi_overlap"])
-            parcel_info.to_csv(parcel_info_pth, index=False)
+            self.parcel_info.to_csv(parcel_info_pth, index=False)
 
-        base_pattern = f"{self.parcels_name}_*.nii.gz"
-        matched = list(
-            self._get_analysis_parcels_folder(self.parcels_name).glob(
-                base_pattern
-            )
-        )
-        if matched:
-            id = (
-                max(
-                    [
-                        int(pth.stem.split("_")[-1].split(".")[0])
-                        for pth in matched
-                    ]
-                )
-                + 1
-            )
-        else:
-            id = 0
         parcels_pth = (
             self._get_analysis_parcels_folder(self.parcels_name)
-            / f"{self.parcels_name}_{id:04d}.nii.gz"
+            / f"parcels-{self.parcels_name}_sm-{self.smoothing_kernel_size}_spmsmooth-{self.use_spm_smooth}_voxthres-{self.overlap_thr_vox}_roithres-{self.overlap_thr_roi}_sz-{self.min_voxel_size}.nii.gz"
         )
         parcels_img = Nifti1Image(self.parcels, self.img_affine)
         parcels_img.to_filename(parcels_pth)
 
-        filtering_info_pth = (
-            self._get_analysis_parcels_folder(self.parcels_name)
-            / "filtering_info.csv"
-        )
-        filtering_info_pth.parent.mkdir(parents=True, exist_ok=True)
-
-        new_filtering_info = pd.DataFrame(
-            {
-                "id": [id],
-                "overlap_thr_roi": [self.overlap_thr_roi],
-                "min_voxel_size": [self.min_voxel_size],
-            }
-        )
-        if not filtering_info_pth.exists():
-            new_filtering_info.to_csv(filtering_info_pth, index=False)
-        else:
-            filtering_info = pd.read_csv(filtering_info_pth)
-            new_filtering_info = pd.concat(
-                [filtering_info, new_filtering_info]
-            )
-            new_filtering_info.to_csv(filtering_info_pth, index=False)
 
     @staticmethod
     def _harmonic_mean(data: np.ndarray) -> float:

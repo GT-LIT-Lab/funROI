@@ -48,18 +48,19 @@ class ParcelsConfig(dict):
         )
 
     @staticmethod
-    def from_analysis_output(name: str, overlap_thr_roi: float, min_voxel_size: int):
+    def from_analysis_output(
+        name: str, 
+        smoothing_kernel_size: int,
+        overlap_thr_vox: float,
+        overlap_thr_roi: float, 
+        min_voxel_size: int,
+        use_spm_smooth: bool = True):
         """
         Create a ParcelsConfig object from the analysis output folder.
         """
-        parcels_info = _get_parcels_folder() / name / 'filtering_info.csv'
-        if not parcels_info.exists():
-            raise ValueError(f"Parcels info file not found: {parcels_info}")
-        parcels_info = pd.read_csv(parcels_info).set_index('id')
-        id = parcels_info[(parcels_info['overlap_thr_roi'] == overlap_thr_roi) & (parcels_info['min_voxel_size'] == min_voxel_size)].index[0]
-        parcels_path = _get_parcels_folder() / name / f"{name}_{id:04d}.nii.gz"
-        if os.path.exists(_get_parcels_folder() / name / f"{name}_{id:04d}.json"):
-            labels_path = _get_parcels_folder() / name / f"{name}_{id:04d}.json"
+        parcels_path = _get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
+        if os.path.exists(_get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"):
+            labels_path = _get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
         else:
             labels_path = None
         return ParcelsConfig(parcels_path, labels_path)
