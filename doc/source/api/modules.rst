@@ -7,3 +7,4 @@ funROI
    funROI
    funROI.analysis
    funROI.first_level
+   funROI.datasets
