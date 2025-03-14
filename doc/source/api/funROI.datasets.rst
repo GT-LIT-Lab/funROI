@@ -1,4 +1,4 @@
-funROI.first\_level
+funROI.datasets
 ===========================
 
 .. automodule:: funROI.datasets

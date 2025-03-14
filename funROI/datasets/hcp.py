@@ -5,6 +5,8 @@ import pandas as pd
 from ..utils import ensure_paths
 import json
 import shutil
+import pathlib
+from typing import List, Union
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -157,7 +159,21 @@ def _convert_to_bids(data_dir, bids_dir, subject, task):
         shutil.rmtree(run_folder)
 
 @ensure_paths("data_dir")
-def fetch_data(data_dir, task, subjects):
+def fetch_data(data_dir: Union[str, pathlib.Path], 
+               task: str, 
+               subjects: List[str]) -> None:
+    """
+    Fetches the HCP dataset for a given task and subjects, and converts it to 
+    BIDS format.
+
+    :param data_dir: Path to the directory where the data will be stored.
+    :type data_dir: Union[str, pathlib.Path]
+    :param task: The task to fetch data for. Options are "LANGUAGE", "MOTOR", 
+                 "WM", and "SOCIAL".
+    :type task: str
+    :param subjects: List of subject IDs to fetch data for (e.g., ["100307", "100408"]).
+    :type subjects: List[str]
+    """
     task = task.upper()
     if task not in ["LANGUAGE", "MOTOR", "WM", "SOCIAL"]:
         raise ValueError("Unsupported task. Choose from LANGUAGE, MOTOR, WM, SOCIAL")
