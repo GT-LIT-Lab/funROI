@@ -8,9 +8,6 @@ import shutil
 import pathlib
 from typing import List, Union
 
-warnings.simplefilter(action="ignore", category=FutureWarning)
-
-
 def _get_events(ev_folder_path, events):
     events_df = pd.DataFrame(
         columns=["onset", "duration", "trial_type", "amplitude"]
