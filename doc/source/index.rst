@@ -8,6 +8,10 @@ funROI Documentation
 
 The **funROI** (FUNctional Region Of Interest) toolbox is designed to provide robust analytic methods for fMRI data analyses that accommodate inter-subject variability in the precise locations of functional activations. Unlike conventional voxel-wise group analyses, this toolbox implements the subject-specific **functional localization** approach, which does not assume strict voxel correspondence across individuals (see, e.g., Saxe et al, 2006; Fedorenko et al, 2010). 
 
+.. image:: funROI-collage.png
+   :width: 400px
+   :align: center
+
 The **funROI** Toolbox supports several types of analyses:
 
 1. **Parcel generation:** generates parcels (brain masks) based on individual activation maps, which can serve as a spatial constraint for subsequent subject-level analyses. (This step can be skipped if you already have parcels of interest).
@@ -49,18 +53,12 @@ This toolbox implements the parcel definition, fROI definition, and fROI effect 
 How to Cite
 -----------
 
-If you use **funROI** in your research or other work, please cite it using the following information:
-
-.. note::
-   The software is archived on Figshare. For additional citation details or alternative citation formats, please visit the
-   `Figshare page <https://doi.org/10.6084/m9.figshare.28120967>`_.
-
-If you need an example reference in a common format, you might consider:
+If you use **funROI** in your research or other work, please cite it as follows:
 
     Gao, R., & Ivanova, A. A. (2025). funROI: A Python package for functional ROI analyses of fMRI data
     (Version 1.0) [Software]. Figshare. https://doi.org/10.6084/m9.figshare.28120967
 
-For more details on how to cite the package or to download citation metadata, please visit our
+The software is archived on Figshare. For additional citation details or alternative citation formats, please visit the 
 `Figshare repository <https://doi.org/10.6084/m9.figshare.28120967>`_.
 
 Thank you for acknowledging our work!
