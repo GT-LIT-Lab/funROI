@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath("../../"))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "funROI"
-copyright = "2025, funROI developers"
+copyright = "2025, the funROI AUTHORS"
 author = "Ruimin Gao and Anna A. Ivanova"
 
 # -- General configuration ---------------------------------------------------

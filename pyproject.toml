@@ -1,7 +1,10 @@
 [project]
 name = "funROI"
-version = "0.1.0"
-authors = [{name = "Ruimin Gao", email = "ruimin.gao@gatech.edu"}]
+version = "1.0.0"
+authors = [
+    {name = "Ruimin Gao", email = "ruimin.gao@gatech.edu"},
+    {name = "Anna A. Ivanova", email = "a.ivanova@gatech.edu"}
+]
 dependencies = [
     "sphinx>=4.0",
     "sphinx_rtd_theme",
@@ -13,8 +16,10 @@ dependencies = [
     "statsmodels==0.14.3",
     "nilearn==0.10.4"
 ]
-description = "A Python package for functional ROI analysis in fMRI data"
+description = "A Python package for functional ROI analyses of fMRI data"
 homepage = "https://github.com/GT-LIT-Lab/funROI"
+readme = "README.rst"
+readme_content_type = "text/x-rst"
 
 [build-system]
 requires = ["flit_core >=3.2,<4"]
