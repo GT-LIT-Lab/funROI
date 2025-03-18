@@ -89,7 +89,7 @@ class SpatialCorrelationEstimator(AnalysisSaver):
             run is determined by automatic orthogonalization.
         :type run2: Optional[str]
 
-        :return: the results are returned as a tuple of two dataframes: 
+        :return: the results are returned as a tuple of two dataframes:
             the spatial correlation estimates averaged across runs, and
             the spatial correlation estimates detailed by run.
         :rtype: Optional[Tuple[pd.DataFrame, pd.DataFrame]]

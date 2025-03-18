@@ -15,14 +15,15 @@ _get_parcels_folder = lambda: get_analysis_output_folder() / "parcels"
 class ParcelsConfig(dict):
     """
     Configuration for parcels.
-    
+
     :param parcels_path: Path to the parcels image.
     :type parcels_path: Union[str, Path]
-    :param labels_path: Path to the labels file. The labels file can be a JSON 
+    :param labels_path: Path to the labels file. The labels file can be a JSON
         file mapping numerical labels to label names, or a text file with one
         label name per line.
     :type labels_path: Optional[Union[str, Path]]
     """
+
     @ensure_paths("parcels_path", "labels_path")
     def __init__(
         self,
@@ -49,22 +50,35 @@ class ParcelsConfig(dict):
 
     @staticmethod
     def from_analysis_output(
-        name: str, 
+        name: str,
         smoothing_kernel_size: int,
         overlap_thr_vox: float,
-        overlap_thr_roi: float, 
+        overlap_thr_roi: float,
         min_voxel_size: int,
-        use_spm_smooth: bool = True):
+        use_spm_smooth: bool = True,
+    ):
         """
         Create a ParcelsConfig object from the analysis output folder.
         """
-        parcels_path = _get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
-        if os.path.exists(_get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"):
-            labels_path = _get_parcels_folder() / f"parcels-{name}" / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
+        parcels_path = (
+            _get_parcels_folder()
+            / f"parcels-{name}"
+            / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
+        )
+        if os.path.exists(
+            _get_parcels_folder()
+            / f"parcels-{name}"
+            / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
+        ):
+            labels_path = (
+                _get_parcels_folder()
+                / f"parcels-{name}"
+                / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
+            )
         else:
             labels_path = None
         return ParcelsConfig(parcels_path, labels_path)
-        
+
 
 def get_parcels(
     parcels: Union[str, ParcelsConfig]
@@ -130,9 +144,9 @@ def _get_external_parcels(parcels: ParcelsConfig) -> Tuple[Nifti1Image, dict]:
     return parcels_img, label_dict
 
 
-def label_parcel(parcels_img: Nifti1Image, 
-                 label_dict: dict, 
-                 label: int) -> Tuple[Nifti1Image, str]:
+def label_parcel(
+    parcels_img: Nifti1Image, label_dict: dict, label: int
+) -> Tuple[Nifti1Image, str]:
     """
     Label a parcel.
     """
@@ -142,24 +156,30 @@ def label_parcel(parcels_img: Nifti1Image,
     return math_img("img == {}".format(label), img=parcels_img), label_name
 
 
-def merge_parcels(parcels_img: Nifti1Image, 
-                  label_dict: dict,
-                  label1: Union[int, str],
-                  label2: Union[int, str],
-                  new_label: Optional[str] = None) -> Tuple[Nifti1Image, dict]:
+def merge_parcels(
+    parcels_img: Nifti1Image,
+    label_dict: dict,
+    label1: Union[int, str],
+    label2: Union[int, str],
+    new_label: Optional[str] = None,
+) -> Tuple[Nifti1Image, dict]:
     """
     Merge two parcels.
     """
 
     if new_label in label_dict.values():
-        raise ValueError(f"New label {new_label} already exists in label dictionary.")
+        raise ValueError(
+            f"New label {new_label} already exists in label dictionary."
+        )
 
     if isinstance(label1, str):
         label1 = {v: k for k, v in label_dict.items()}[label1]
     if isinstance(label2, str):
         label2 = {v: k for k, v in label_dict.items()}[label2]
     parcels_data = _merge_parcels(parcels_img.get_fdata(), label1, label2)
-    parcels_img = Nifti1Image(parcels_data, parcels_img.affine, parcels_img.header)
+    parcels_img = Nifti1Image(
+        parcels_data, parcels_img.affine, parcels_img.header
+    )
 
     label_dict.pop(label1, None)
     label_dict.pop(label2, None)
@@ -172,9 +192,9 @@ def merge_parcels(parcels_img: Nifti1Image,
 def _merge_parcels(data: np.ndarray, x: int, y: int) -> np.ndarray:
     if len(data.shape) != 3:
         raise ValueError("Data must be 3D.")
-    if x == y: 
+    if x == y:
         return data
-    
+
     neighbors26 = np.zeros((26, data.shape[0], data.shape[1], data.shape[2]))
     ni = 0
     for dx in range(-1, 2):
@@ -187,9 +207,11 @@ def _merge_parcels(data: np.ndarray, x: int, y: int) -> np.ndarray:
                 neighbors26[ni] = np.roll(neighbors26[ni], dz, axis=2)
                 ni += 1
 
-    mask = np.all(np.isin(neighbors26, [0, x, y]), axis=0) & \
-        np.any(neighbors26 == x, axis=0) & \
-        np.any(neighbors26 == y, axis=0)
+    mask = (
+        np.all(np.isin(neighbors26, [0, x, y]), axis=0)
+        & np.any(neighbors26 == x, axis=0)
+        & np.any(neighbors26 == y, axis=0)
+    )
     data[mask] = x
     data[data == y] = x
 

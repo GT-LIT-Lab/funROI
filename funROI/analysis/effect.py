@@ -51,9 +51,7 @@ class EffectEstimator(AnalysisSaver):
         _, self.froi_labels = get_parcels(self.froi.parcels)
 
     def run(
-        self,
-        task: str,
-        effects: List[str]
+        self, task: str, effects: List[str]
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Run the effect estimation. The results are stored in the analysis

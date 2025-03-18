@@ -64,7 +64,7 @@ def run_first_level(
     :type data_filter: Optional[List[Tuple[str, str]]]
     :param contrasts: List of contrast definitions. Each contrast is a tuple
         of the contrast name and the contrast expression. The contrast
-        expression is defined by a dictionary of regressor names and their 
+        expression is defined by a dictionary of regressor names and their
         weights.
     :type contrasts: Optional[List[Tuple[str, Dict[str, float]]]
     :param orthogs: List of orthogonalization strategies. For each group,
@@ -183,7 +183,11 @@ def run_first_level(
             # Compute single-run contrasts
             for run_i in range(1, len(run_imgs) + 1):
                 run_contrast_vector = [
-                    v * len(run_imgs) if label.startswith(f"run-{run_i:02d}_") else 0
+                    (
+                        v * len(run_imgs)
+                        if label.startswith(f"run-{run_i:02d}_")
+                        else 0
+                    )
                     for label, v in zip(design_matrix.columns, contrast_vector)
                 ]
                 _compute_contrast(
@@ -210,11 +214,16 @@ def run_first_level(
                 for rem, run_label in zip([1, 0], ["odd", "even"]):
                     orthog_contrast_expr = [
                         (
-                            (v
-                            if int(label.split("_")[0].split("-")[1]) % 2
-                            == rem
-                            else 0) * (len(run_imgs)) / (
-                                len(run_imgs) // 2 if rem == 0
+                            (
+                                v
+                                if int(label.split("_")[0].split("-")[1]) % 2
+                                == rem
+                                else 0
+                            )
+                            * (len(run_imgs))
+                            / (
+                                len(run_imgs) // 2
+                                if rem == 0
                                 else len(run_imgs) - len(run_imgs) // 2
                             )
                         )
@@ -234,8 +243,11 @@ def run_first_level(
             if "all-but-one" in orthogs:
                 for run_i in range(1, len(run_imgs) + 1):
                     orthog_contrast_expr = [
-                        v * len(run_imgs) / (len(run_imgs) - 1) 
-                        if not label.startswith(f"run-{run_i:02d}_") else 0
+                        (
+                            v * len(run_imgs) / (len(run_imgs) - 1)
+                            if not label.startswith(f"run-{run_i:02d}_")
+                            else 0
+                        )
                         for label, v in zip(
                             design_matrix.columns, contrast_vector
                         )

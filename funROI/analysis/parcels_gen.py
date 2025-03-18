@@ -220,9 +220,10 @@ class ParcelsGenerator:
                 parcel_mask = parcel_gen.parcels == parcel
                 parcel_size = np.sum(parcel_mask)
                 parcel_info_data.append([parcel, parcel_size])
-            parcel_gen.parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size"])
+            parcel_gen.parcel_info = pd.DataFrame(
+                parcel_info_data, columns=["id", "size"]
+            )
             parcel_gen._save()
-
 
     def run(self) -> Nifti1Image:
         """
@@ -257,8 +258,12 @@ class ParcelsGenerator:
                         )
                         > 0
                     )
-                parcel_info_data.append([parcel, parcel_size, np.mean(subject_coverage)])
-            self.parcel_info = pd.DataFrame(parcel_info_data, columns=["id", "size", "roi_overlap"])
+                parcel_info_data.append(
+                    [parcel, parcel_size, np.mean(subject_coverage)]
+                )
+            self.parcel_info = pd.DataFrame(
+                parcel_info_data, columns=["id", "size", "roi_overlap"]
+            )
             self._save()
 
         if self.min_voxel_size != 0 or self.overlap_thr_roi != 0:
@@ -329,7 +334,7 @@ class ParcelsGenerator:
     def filter(
         self,
         overlap_thr_roi: Optional[float] = 0,
-        min_voxel_size: Optional[int] = 0
+        min_voxel_size: Optional[int] = 0,
     ) -> Nifti1Image:
         """
         Filter the parcels with new filtering parameters. The filtered results
@@ -405,15 +410,27 @@ class ParcelsGenerator:
             if parcel == 0:
                 continue
             parcel_mask = parcels == parcel
-            if parcel_info.loc[parcel_info["id"] == parcel, "roi_overlap"].values[0] < overlap_thr_roi:
+            if (
+                parcel_info.loc[
+                    parcel_info["id"] == parcel, "roi_overlap"
+                ].values[0]
+                < overlap_thr_roi
+            ):
                 filtered_parcels[parcel_mask] = 0
-            if parcel_info.loc[parcel_info["id"] == parcel, "size"].values[0] < min_voxel_size:
+            if (
+                parcel_info.loc[parcel_info["id"] == parcel, "size"].values[0]
+                < min_voxel_size
+            ):
                 filtered_parcels[parcel_mask] = 0
         return filtered_parcels
 
     @staticmethod
     def _get_analysis_parcels_folder(parcels_name: str) -> Path:
-        return get_analysis_output_folder() / f"parcels" / f"parcels-{parcels_name}"
+        return (
+            get_analysis_output_folder()
+            / f"parcels"
+            / f"parcels-{parcels_name}"
+        )
 
     def _save(self):
         parcels_info_pth = (
@@ -446,7 +463,6 @@ class ParcelsGenerator:
         )
         parcels_img = Nifti1Image(self.parcels, self.img_affine)
         parcels_img.to_filename(parcels_pth)
-
 
     @staticmethod
     def _harmonic_mean(data: np.ndarray) -> float:

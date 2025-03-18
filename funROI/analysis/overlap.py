@@ -41,7 +41,7 @@ class OverlapEstimator(AnalysisSaver):
         subject1: Optional[str] = None,
         subject2: Optional[str] = None,
         run1: Optional[str] = None,
-        run2: Optional[str] = None
+        run2: Optional[str] = None,
     ):
         """
         Run the overlap estimation. The results are stored in the analysis
@@ -55,7 +55,7 @@ class OverlapEstimator(AnalysisSaver):
         :type froi2: Union[FROIConfig, str, ParcelsConfig]
         :param subject1: Subject label for the first set of fROIs. Required if
             fROIs are used.
-        :type subject1: str 
+        :type subject1: str
         :param subject2: Subject label for the second set of fROIs. Required if
             fROIs are used.
         :type subject2: str
@@ -113,24 +113,16 @@ class OverlapEstimator(AnalysisSaver):
             if run2 is None:
                 run2 = "all"
             froi1_run_labels, froi2_run_labels = ["parcels"], [run2]
-            froi2_data = _get_froi_data(
-                subject2, self.froi2, run2
-            )[None, :]
+            froi2_data = _get_froi_data(subject2, self.froi2, run2)[None, :]
         elif is_parcels2:
             if run1 is None:
                 run1 = "all"
             froi1_run_labels, froi2_run_labels = ["all"], [run1]
-            froi1_data = _get_froi_data(
-                subject1, self.froi1, run1
-            )[None, :]
+            froi1_data = _get_froi_data(subject1, self.froi1, run1)[None, :]
         elif run1 is not None and run2 is not None:
             froi1_run_labels, froi2_run_labels = [run1], [run2]
-            froi1_data = _get_froi_data(
-                subject1, self.froi1, run1
-            )[None, :]
-            froi2_data = _get_froi_data(
-                subject2, self.froi2, run2
-            )[None, :]
+            froi1_data = _get_froi_data(subject1, self.froi1, run1)[None, :]
+            froi2_data = _get_froi_data(subject2, self.froi2, run2)[None, :]
         else:
             okorth = (subject1 != subject2) or _check_orthogonal(
                 subject1,
@@ -140,15 +132,13 @@ class OverlapEstimator(AnalysisSaver):
                 self.froi2.contrasts,
             )
             if self.run1 is not None and self.run2 is not None:
-                froi1_run_labels, froi2_run_labels = [self.run1], [
-                    self.run2
+                froi1_run_labels, froi2_run_labels = [self.run1], [self.run2]
+                froi1_data = _get_froi_data(subject1, self.froi1, self.run1)[
+                    None, :
                 ]
-                froi1_data = _get_froi_data(
-                    subject1, self.froi1, self.run1
-                )[None, :]
-                froi2_data = _get_froi_data(
-                    subject2, self.froi2, self.run2
-                )[None, :]
+                froi2_data = _get_froi_data(subject2, self.froi2, self.run2)[
+                    None, :
+                ]
             elif okorth:
                 froi1_run_labels, froi2_run_labels = ["all"], ["all"]
                 froi1_data = _get_froi_data(subject1, self.froi1, "all")[
@@ -158,20 +148,16 @@ class OverlapEstimator(AnalysisSaver):
                     None, :
                 ]
             else:
-                froi1_data, froi1_run_labels = (
-                    _get_orthogonalized_froi_data(
-                        subject1, self.froi1, 1, self.orthogonalization
-                    )
+                froi1_data, froi1_run_labels = _get_orthogonalized_froi_data(
+                    subject1, self.froi1, 1, self.orthogonalization
                 )
                 if froi1_data is None:
                     raise ValueError(
                         f"Data not found for subject {subject1}, fROI "
                         f"{self.froi1} for the orthogonalization, skipping."
                     )
-                froi2_data, froi2_run_labels = (
-                    _get_orthogonalized_froi_data(
-                        subject2, self.froi2, 2, self.orthogonalization
-                    )
+                froi2_data, froi2_run_labels = _get_orthogonalized_froi_data(
+                    subject2, self.froi2, 2, self.orthogonalization
                 )
                 if froi2_data is None:
                     raise ValueError(
@@ -211,9 +197,7 @@ class OverlapEstimator(AnalysisSaver):
                         [froi2_run_labels, froi2_run_labels2]
                     )
 
-        df_summary, df_detail = self._run(
-            froi1_data, froi2_data, self.kind
-        )
+        df_summary, df_detail = self._run(froi1_data, froi2_data, self.kind)
         if not is_parcels1 or not is_parcels2:
             df_detail["run1"] = df_detail["run"].apply(
                 lambda x: froi1_run_labels[x]

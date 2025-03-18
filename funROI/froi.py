@@ -1,4 +1,3 @@
-import os
 from .parcels import get_parcels, ParcelsConfig
 from .utils import (
     validate_arguments,
@@ -42,6 +41,7 @@ class FROIConfig(dict):
         provided. Options are 'min', 'max', 'sum', 'prod', 'and', 'or', or None.
     :type conjunction_type: str, optional
     """
+
     @validate_arguments(
         threshold_type={"none", "bonferroni", "fdr", "n", "percent"},
         conjunction_type={"min", "max", "sum", "prod", "and", "or", None},

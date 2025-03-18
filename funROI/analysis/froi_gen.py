@@ -72,7 +72,7 @@ class FROIGenerator:
                     subject, self.run_label, self.froi, create=True
                 )
                 froi_img.to_filename(froi_pth)
-            
+
             data.append((subject, froi_img))
 
         self.subjects = [dat[0] for dat in data]

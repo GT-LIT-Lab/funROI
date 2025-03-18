@@ -8,6 +8,7 @@ import shutil
 import pathlib
 from typing import List, Union
 
+
 def _get_events(ev_folder_path, events):
     events_df = pd.DataFrame(
         columns=["onset", "duration", "trial_type", "amplitude"]
@@ -24,7 +25,9 @@ def _get_events(ev_folder_path, events):
         events_df = pd.concat([events_df, ev_data], ignore_index=True)
     events_df = events_df.sort_values("onset").reset_index(drop=True)
     events_df = events_df[["trial_type", "onset", "duration"]]
-    events_df["trial_type"] = events_df["trial_type"].str.replace(r"[^a-zA-Z0-9]", "")
+    events_df["trial_type"] = events_df["trial_type"].str.replace(
+        r"[^a-zA-Z0-9]", ""
+    )
     return events_df
 
 
@@ -82,13 +85,12 @@ def _convert_to_bids(data_dir, bids_dir, subject, task):
         # Data files
         shutil.copy(
             run_folder / "brainmask_fs.2.nii.gz",
-            bids_folder / f"{bids_prefix}_desc-brain_mask.nii.gz"
+            bids_folder / f"{bids_prefix}_desc-brain_mask.nii.gz",
         )
         shutil.copy(
             run_folder / f"tfMRI_{run_filename}.nii.gz",
-            bids_folder / f"{bids_prefix}_desc-preproc_bold.nii.gz"
+            bids_folder / f"{bids_prefix}_desc-preproc_bold.nii.gz",
         )
-        
 
         # BOLD configuration
         with open(bids_folder / f"{bids_prefix}_bold.json", "w") as f:
@@ -139,9 +141,18 @@ def _convert_to_bids(data_dir, bids_dir, subject, task):
         if task == "LANGUAGE":
             events = ["math", "story"]
         elif task == "MOTOR":
-            events = ['cue', "t", "lf", "rf", "lh", "rh"]
+            events = ["cue", "t", "lf", "rf", "lh", "rh"]
         elif task == "WM":
-            events = ['0bk_body', '0bk_faces', '0bk_places', '0bk_tools', '2bk_body', '2bk_faces', '2bk_places', '2bk_tools']
+            events = [
+                "0bk_body",
+                "0bk_faces",
+                "0bk_places",
+                "0bk_tools",
+                "2bk_body",
+                "2bk_faces",
+                "2bk_places",
+                "2bk_tools",
+            ]
         elif task == "SOCIAL":
             events = ["mental", "rnd"]
 
@@ -155,17 +166,18 @@ def _convert_to_bids(data_dir, bids_dir, subject, task):
         run_i += 1
         shutil.rmtree(run_folder)
 
+
 @ensure_paths("data_dir")
-def fetch_data(data_dir: Union[str, pathlib.Path], 
-               task: str, 
-               subjects: List[str]) -> None:
+def fetch_data(
+    data_dir: Union[str, pathlib.Path], task: str, subjects: List[str]
+) -> None:
     """
-    Fetches the HCP dataset for a given task and subjects, and converts it to 
+    Fetches the HCP dataset for a given task and subjects, and converts it to
     BIDS format.
 
     :param data_dir: Path to the directory where the data will be stored.
     :type data_dir: Union[str, pathlib.Path]
-    :param task: The task to fetch data for. Options are "LANGUAGE", "MOTOR", 
+    :param task: The task to fetch data for. Options are "LANGUAGE", "MOTOR",
                  "WM", and "SOCIAL".
     :type task: str
     :param subjects: List of subject IDs to fetch data for (e.g., ["100307", "100408"]).
@@ -173,7 +185,9 @@ def fetch_data(data_dir: Union[str, pathlib.Path],
     """
     task = task.upper()
     if task not in ["LANGUAGE", "MOTOR", "WM", "SOCIAL"]:
-        raise ValueError("Unsupported task. Choose from LANGUAGE, MOTOR, WM, SOCIAL")
+        raise ValueError(
+            "Unsupported task. Choose from LANGUAGE, MOTOR, WM, SOCIAL"
+        )
     data_dir = data_dir.absolute()
     bids_dir = data_dir / "bids"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -185,6 +199,5 @@ def fetch_data(data_dir: Union[str, pathlib.Path],
             _convert_to_bids(data_dir / "HCP_1200", bids_dir, subject, task)
         except Exception as e:
             print(f"Error processing {subject}: {e}")
-    
-    # shutil.rmtree(data_dir / "HCP_1200")
 
+    # shutil.rmtree(data_dir / "HCP_1200")

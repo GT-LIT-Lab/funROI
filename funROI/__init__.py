@@ -45,7 +45,8 @@ from .froi import FROIConfig
 
 __all__ = [
     "first_level",
-    "analysis" "set_bids_data_folder",
+    "analysis",
+    "set_bids_data_folder",
     "set_bids_data_folder",
     "get_bids_data_folder",
     "set_bids_deriv_folder",
@@ -58,4 +59,5 @@ __all__ = [
     "reset_settings",
     "FROIConfig",
     "ParcelsConfig",
+    "datasets",
 ]
