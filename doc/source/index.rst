@@ -57,7 +57,7 @@ How to Cite
 
 If you use **funROI** in your research or other work, please cite it as follows:
 
-   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1). Figshare. https://doi.org/10.6084/m9.figshare.28120967
+   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1). Figshare. https://doi.org/10.6084/m9.figshare.28120967.v1
 
 The software is archived on Figshare. For additional citation details or alternative citation formats, please visit the 
 `Figshare repository <https://doi.org/10.6084/m9.figshare.28120967>`_.
