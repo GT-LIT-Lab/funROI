@@ -1,6 +1,6 @@
 [project]
 name = "funROI"
-version = "1.0.0.dev8"
+version = "1.0.0"
 authors = [
     {name = "Ruimin Gao", email = "ruimin.gao@gatech.edu"},
     {name = "Anna A. Ivanova", email = "a.ivanova@gatech.edu"}
