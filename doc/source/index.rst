@@ -32,6 +32,25 @@ The toolbox builds on top of the *nilearn* package for analyzing fMRI data and f
 
 For more information, see the demo at the end of the page on how to use the toolbox. The demo will guide you step by step through setting up an analysis, running different types of subject-specific analyses, and interpreting the output. Full toolbox documentation can be accessed `here <https://funroi.readthedocs.io/en/latest/api/modules.html>`_.
 
+Installation
+------------
+We recommend that you install `funROI` in a virtual Python environment. To create a conda environment:
+
+.. code-block:: bash
+  
+  conda create -n funroi python=3.12
+  conda activate funroi
+  pip install funroi
+
+
+Alternatively, with `venv`:
+
+.. code-block:: bash
+
+  python -m venv funroi
+  source funroi/bin/activate
+  pip install funroi
+
 
 Using independent data
 -----------------------
