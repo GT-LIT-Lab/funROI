@@ -26,7 +26,7 @@ The **funROI** Toolbox supports several types of analyses:
 
 5. **Spatial overlap estimation:** calculates the overlap between parcels and/or fROIs from different subjects or definitions.
 
-The **funROI** Toolbox is compliant with the Brain Imaging Data Structure (BIDS), a standardized framework for organizing and sharing neuroimaging data. For more details on BIDS, visit `their official webiste <https://bids.neuroimaging.io>`_.
+The **funROI** Toolbox is compliant with the Brain Imaging Data Structure (BIDS), a standardized framework for organizing and sharing neuroimaging data. For more details on BIDS, visit `their official website <https://bids.neuroimaging.io>`_.
 
 The toolbox builds on top of the *nilearn* package for analyzing fMRI data and follows the same object-oriented code design principles.
 
@@ -57,7 +57,7 @@ How to Cite
 
 If you use **funROI** in your research or other work, please cite it as follows:
 
-   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1.0.0). Figshare. https://doi.org/10.6084/m9.figshare.28120967
+   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1). Figshare. https://doi.org/10.6084/m9.figshare.28120967
 
 The software is archived on Figshare. For additional citation details or alternative citation formats, please visit the 
 `Figshare repository <https://doi.org/10.6084/m9.figshare.28120967>`_.

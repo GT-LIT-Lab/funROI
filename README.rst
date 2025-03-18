@@ -7,9 +7,9 @@ funROI
     :alt: Documentation Status
     :target: https://funroi.readthedocs.io/en/latest/?badge=latest
 
-The **funROI** (FUNctional Region Of Interest) toolbox is designed to provide robust analytic methods for fMRI data analyses that accommodate inter-subject variability in the precise locations of functional activations. Unlike conventional voxel-wise group analyses, this toolbox implements the subject-specific **functional localization** approach, which does not assume strict voxel correspondence across individuals (see, e.g., Saxe et al, 2006; Fedorenko et al, 2010).
+The **funROI** (FUNctional Region Of Interest) toolbox is designed to provide robust analytic methods for fMRI data analyses that accommodate inter-subject variability in the precise locations of functional activations. 
 
-.. image:: doc/source/funROI-collage.png
+.. image:: https://github.com/GT-LIT-Lab/funROI/raw/main/doc/source/funROI-collage.png
    :width: 800px
    :align: center
 
@@ -43,7 +43,7 @@ Citation
 --------
 If you use funROI in your work, please cite it as follows:
 
-   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1.0.0). Figshare. https://doi.org/10.6084/m9.figshare.28120967
+   Gao, R., & Ivanova, A. A. (2025). *funROI: A Python package for functional ROI analyses of fMRI data* (Version 1). Figshare. https://doi.org/10.6084/m9.figshare.28120967
 
 Acknowledgements
 ----------------
