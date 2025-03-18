@@ -2,7 +2,7 @@ sphinx>=7.1.2
 sphinx-rtd-theme
 sphinx_gallery
 sphinx_design
-h5py==3.0.0
+h5py>=3.0.0
 nibabel>=5.2.0
 numpy>=1.22.4
 pandas>=2.2.0
