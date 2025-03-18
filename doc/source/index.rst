@@ -12,6 +12,8 @@ The **funROI** (FUNctional Region Of Interest) toolbox is designed to provide ro
    :width: 400px
    :align: center
 
+|
+
 The **funROI** Toolbox supports several types of analyses:
 
 1. **Parcel generation:** generates parcels (brain masks) based on individual activation maps, which can serve as a spatial constraint for subsequent subject-level analyses. (This step can be skipped if you already have parcels of interest).
