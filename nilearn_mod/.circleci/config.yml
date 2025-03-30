@@ -1,0 +1,42 @@
+---
+# See https://nilearn.github.io/dev/ci.html for details.
+
+version: 2.1
+
+# Parameters required to trigger the execution of the "host_docs" job
+parameters:
+    GITHUB_RUN_URL:
+        type: string
+        default: none
+
+jobs:
+    host_docs:
+        machine:
+            image: ubuntu-2204:current
+        environment:
+            GITHUB_ARTIFACT_URL: << pipeline.parameters.GITHUB_RUN_URL >>/doc.zip
+        steps:
+        -   checkout
+        -   run:
+                name: Download documentation
+                command: bash build_tools/circle/download_documentation.sh
+        -   store_artifacts:
+                path: doc/_build/html/
+                destination: dev
+        # Persists the generated documentation, so that it
+        # can be attached and deployed in the "deploy" job
+        -   persist_to_workspace:
+                root: doc/_build
+                paths:
+                -   html
+
+
+workflows:
+
+    host_and_deploy_doc:
+        when:
+            not:
+                equal: [none, << pipeline.parameters.GITHUB_RUN_URL >>]
+    # The jobs should run only when triggered by the workflow
+        jobs:
+        -   host_docs
