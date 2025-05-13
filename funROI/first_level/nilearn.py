@@ -10,6 +10,7 @@ from ..contrast import (
     _get_contrast_path,
     _get_design_matrix_path,
     _get_contrast_folder,
+    _get_residuals_path
 )
 from nilearn.glm.first_level import (
     first_level_from_bids,
@@ -98,6 +99,7 @@ def run_first_level(
             space_label=space,
             derivatives_folder=derivatives_folder,
             img_filters=data_filter,
+            minimize_memory=False,
             **kwargs,
         )
     )
@@ -110,6 +112,9 @@ def run_first_level(
         ]
         events = models_events[sub_i]
         confounds = models_confounds[sub_i]
+
+        if not isinstance(confounds, list):
+            confounds = [confounds]
 
         contrasts_folder = _get_contrast_folder(subject, task)
         contrasts_folder.mkdir(parents=True, exist_ok=True)
@@ -179,6 +184,9 @@ def run_first_level(
             contrasts_[con_i] = (contrast_name, contrast_vector)
 
         model.fit(run_img_grand, design_matrices=design_matrix)
+
+        model.residuals[0].to_filename(_get_residuals_path(subject, task))
+
         for con_i, (contrast_name, contrast_vector) in enumerate(contrasts_):
             # Compute single-run contrasts
             for run_i in range(1, len(run_imgs) + 1):

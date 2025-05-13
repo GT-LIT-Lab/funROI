@@ -46,6 +46,10 @@ _get_design_matrix_path = lambda subject, task: (
     _get_model_folder(subject, task)
     / f"sub-{subject}_task-{task}_design-matrix.csv"
 )
+_get_residuals_path = lambda subject, task: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_residuals.nii.gz"
+)
 
 
 def _get_contrast_vector(
