@@ -240,12 +240,16 @@ def _plot_surf_matplotlib(
 	output_file=None,
 	axes=None,
 	figure=None,
+	prev_marker=None,
+	new_marker=None,
 ):
 	"""Help for plot_surf.
 
 	This function handles surface plotting when the selected
 	engine is matplotlib.
 	"""
+	from collections import defaultdict
+	from matplotlib.colors import to_hex
 	_default_figsize = [4, 5]
 	limits = [coords.min(), coords.max()]
 
@@ -304,6 +308,7 @@ def _plot_surf_matplotlib(
 	bg_face_colors = _compute_facecolors_matplotlib(
 		bg_map, faces, coords.shape[0], darkness, alpha
 	)
+
 	if surf_map is not None:
 		surf_map_faces = _compute_surf_map_faces_matplotlib(
 			surf_map,
@@ -332,46 +337,68 @@ def _plot_surf_matplotlib(
 
 		p3dcollec.set_facecolors(face_colors)
 		p3dcollec.set_edgecolors(face_colors)
-		
-		# Add labels to ROIs based on unique values in surf_map
-		if surf_map is not None and np.any(kept_indices):
-			# First calculate center of each face
-			face_centers = np.mean(coords[faces], axis=1)
-			
-			# Extract face colors excluding transparent (alpha=0) ones
-			# We're using RGB values (first 3 values) and ignoring alpha
-			visible_faces = np.where(face_colors[:, 3] > 0)[0]
-			if len(visible_faces) > 0:
-				face_rgb = face_colors[visible_faces, :3]
-				
-				# Convert RGB to HSV to compare hues
-				face_hsv = rgb_to_hsv(face_rgb)
 
-				# Round hue values to reduce noise
-				face_hue_rounded = np.round(face_hsv[:, 0], 2)
-				
-				# Find unique hues
-				unique_hues = np.unique(face_hue_rounded)
-				
-				# Create a mapping from hue to index
-				hue_to_index = {hue: i+1 for i, hue in enumerate(unique_hues)}
-				
-				# For each unique hue, find all faces with that hue and add a label
-				for hue in unique_hues:
-					# Find all faces with this hue (with some tolerance)
-					hue_match = np.isclose(face_hue_rounded, hue, atol=0.05)
-					color_faces = visible_faces[hue_match]
-					
-					# Only add label if we have enough faces with this hue
-					if len(color_faces) > 20:
-						# Calculate center of this ROI
-						roi_center = np.mean(face_centers[color_faces], axis=0)
-						# Add label with index instead of hue value
-						text_color = 'white' if np.mean(hue) < 0.5 else 'black'
-						axes.text(roi_center[0], roi_center[1], roi_center[2], str(hue_to_index[hue]),
-								 color=text_color, fontsize=10, ha='center', va='center',
-								 bbox=dict(facecolor='none', alpha=0.7, edgecolor='none', pad=1))
+		color_to_face_indices = defaultdict(list)
+		for i, color in enumerate(surf_map_face_colors):
+			if kept_indices[i]:
+				color_key = to_hex(color.round(3))  # round to avoid float precision errors
+				color_to_face_indices[color_key].append(i)
+		# print(color_to_face_indices.keys())
+		# Compute center of each color group
+		color_centers = {}
+		marker_names = {}  # 新增：用于存储颜色到标记名称的映射
+		for color_key, face_ids in color_to_face_indices.items():
+			all_vertices = coords[faces[face_ids].flatten()]
+			center = all_vertices.reshape(-1, 3).mean(axis=0)
+			color_centers[color_key] = center
+			marker_names[color_key] = color_key  # 初始时标记名称与颜色相同
+	# print(color_centers.keys())
+	# print(hemi, view)
+	# def is_facing_view(center, hemi, view, threshold=0.0):
+	# 	# Define front-facing directions for each (hemi, view)
+	# 	# These are unit vectors that roughly represent the camera's direction
+	# 	# when rendering typical brain views.
+	# 	# Format: (hemi, view): candidate_direction_vector
+	# 	view_dir_candidates = {
+	# 		("left", "lateral"):  [np.array([-1, 0, 0]), np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
+	# 		("left", "medial"):   [np.array([1, 0, 0]), np.array([-1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
+	# 		("right", "lateral"): [np.array([1, 0, 0]), np.array([-1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
+	# 		("right", "medial"):  [np.array([-1, 0, 0]), np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
+	# 	}
+	# 	direction = center / np.linalg.norm(center)
+
+	# 	# try:
+	# 	# 	view_vector = view_dirs[(hemi, view)]
+	# 	# except KeyError:
+	# 	# 	# Default to using positive x (e.g., lateral left)
+	# 	# view_vector = view_dir_candidates[(hemi, view)][0]
+	# 	if hemi=="left":
+	# 		if view=="lateral":
+	# 			view_vector = np.array([0, -1, 0])
+	# 		else:
+	# 			view_vector = np.array([0, 1, 0])
+	# 	else:
+	# 		if view=="lateral":
+	# 			view_vector = np.array([0, 1, 0])
+	# 		else:
+	# 			view_vector = np.array([0, -1, 0])
+	# 	print(direction)
+	# 	return np.dot(view_vector, direction) > threshold
 	
+	if prev_marker is not None and new_marker is not None:
+		if prev_marker in marker_names.values():
+			# 找到对应的颜色键
+			color_key = next((k for k, v in marker_names.items() if v == prev_marker), None)
+			if color_key is not None:
+				marker_names[color_key] = new_marker
+
+	for i, (color_key, center) in enumerate(color_centers.items()):
+		# if is_facing_view(center, elev, azim):
+		axes.text(center[0], center[1], center[2], marker_names[color_key],
+					fontsize=10, color=color_key, ha='center', va='center',
+					bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+	## also print the color keys as a list
+	print("marker names: ", list(marker_names.values()))
 	if title is not None:
 		axes.set_title(title)
 
@@ -404,6 +431,8 @@ def plot_surf(
 	output_file=None,
 	axes=None,
 	figure=None,
+	prev_marker=None,
+	new_marker=None,
 ):
 	"""Plot surfaces with optional background and data.
 
@@ -651,6 +680,8 @@ def plot_surf(
 			output_file=output_file,
 			axes=axes,
 			figure=figure,
+			prev_marker=prev_marker,
+			new_marker=new_marker,
 		)
 
 	elif engine == "plotly":
@@ -1418,6 +1449,8 @@ def plot_surf_roi(
 	axes=None,
 	figure=None,
 	colorbar=True,
+	prev_marker=None,
+	new_marker=None,
 	**kwargs,
 ):
 	"""Plot ROI on a surface :term:`mesh` with optional background.
@@ -1661,6 +1694,8 @@ def plot_surf_roi(
 		axes=axes,
 		figure=figure,
 		colorbar=colorbar,
+		prev_marker=prev_marker,
+		new_marker=new_marker,
 		**kwargs,
 	)
 
