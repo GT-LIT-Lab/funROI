@@ -242,6 +242,8 @@ def _plot_surf_matplotlib(
 	figure=None,
 	prev_marker=None,
 	new_marker=None,
+	prev_color=None,
+	new_color=None,
 ):
 	"""Help for plot_surf.
 
@@ -324,6 +326,17 @@ def _plot_surf_matplotlib(
 		surf_map_face_colors = cmap(surf_map_faces)
 		# set transparency of voxels under threshold to 0
 		surf_map_face_colors[~kept_indices, 3] = 0
+		
+		color_to_face_indices = defaultdict(list)
+		for i, color in enumerate(surf_map_face_colors):
+			if kept_indices[i]:
+				if prev_color is not None and new_color is not None and to_hex(color[:3]) == prev_color:
+					surf_map_face_colors[i, :3] = np.array(to_rgba(new_color)[:3])
+					color_key = new_color
+				else:
+					color_key = to_hex(color.round(3))  # round to avoid float precision errors
+				color_to_face_indices[color_key].append(i)
+
 		if bg_on_data:
 			# if need be, set transparency of voxels above threshold to 0.7
 			# so that background map becomes visible
@@ -338,52 +351,16 @@ def _plot_surf_matplotlib(
 		p3dcollec.set_facecolors(face_colors)
 		p3dcollec.set_edgecolors(face_colors)
 
-		color_to_face_indices = defaultdict(list)
-		for i, color in enumerate(surf_map_face_colors):
-			if kept_indices[i]:
-				color_key = to_hex(color.round(3))  # round to avoid float precision errors
-				color_to_face_indices[color_key].append(i)
+
 		# print(color_to_face_indices.keys())
 		# Compute center of each color group
 		color_centers = {}
-		marker_names = {}  # 新增：用于存储颜色到标记名称的映射
+		marker_names = {}  
 		for color_key, face_ids in color_to_face_indices.items():
 			all_vertices = coords[faces[face_ids].flatten()]
 			center = all_vertices.reshape(-1, 3).mean(axis=0)
 			color_centers[color_key] = center
-			marker_names[color_key] = color_key  # 初始时标记名称与颜色相同
-	# print(color_centers.keys())
-	# print(hemi, view)
-	# def is_facing_view(center, hemi, view, threshold=0.0):
-	# 	# Define front-facing directions for each (hemi, view)
-	# 	# These are unit vectors that roughly represent the camera's direction
-	# 	# when rendering typical brain views.
-	# 	# Format: (hemi, view): candidate_direction_vector
-	# 	view_dir_candidates = {
-	# 		("left", "lateral"):  [np.array([-1, 0, 0]), np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
-	# 		("left", "medial"):   [np.array([1, 0, 0]), np.array([-1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
-	# 		("right", "lateral"): [np.array([1, 0, 0]), np.array([-1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
-	# 		("right", "medial"):  [np.array([-1, 0, 0]), np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, -1, 0])],
-	# 	}
-	# 	direction = center / np.linalg.norm(center)
-
-	# 	# try:
-	# 	# 	view_vector = view_dirs[(hemi, view)]
-	# 	# except KeyError:
-	# 	# 	# Default to using positive x (e.g., lateral left)
-	# 	# view_vector = view_dir_candidates[(hemi, view)][0]
-	# 	if hemi=="left":
-	# 		if view=="lateral":
-	# 			view_vector = np.array([0, -1, 0])
-	# 		else:
-	# 			view_vector = np.array([0, 1, 0])
-	# 	else:
-	# 		if view=="lateral":
-	# 			view_vector = np.array([0, 1, 0])
-	# 		else:
-	# 			view_vector = np.array([0, -1, 0])
-	# 	print(direction)
-	# 	return np.dot(view_vector, direction) > threshold
+			marker_names[color_key] = color_key  
 	
 	if prev_marker is not None and new_marker is not None:
 		if prev_marker in marker_names.values():
@@ -391,6 +368,8 @@ def _plot_surf_matplotlib(
 			color_key = next((k for k, v in marker_names.items() if v == prev_marker), None)
 			if color_key is not None:
 				marker_names[color_key] = new_marker
+
+
 
 	for i, (color_key, center) in enumerate(color_centers.items()):
 		# if is_facing_view(center, elev, azim):
@@ -433,6 +412,8 @@ def plot_surf(
 	figure=None,
 	prev_marker=None,
 	new_marker=None,
+	prev_color=None,
+	new_color=None,
 ):
 	"""Plot surfaces with optional background and data.
 
@@ -682,6 +663,8 @@ def plot_surf(
 			figure=figure,
 			prev_marker=prev_marker,
 			new_marker=new_marker,
+			prev_color=prev_color,
+			new_color=new_color,
 		)
 
 	elif engine == "plotly":
@@ -1451,6 +1434,8 @@ def plot_surf_roi(
 	colorbar=True,
 	prev_marker=None,
 	new_marker=None,
+	prev_color=None,
+	new_color=None,
 	**kwargs,
 ):
 	"""Plot ROI on a surface :term:`mesh` with optional background.
@@ -1696,6 +1681,8 @@ def plot_surf_roi(
 		colorbar=colorbar,
 		prev_marker=prev_marker,
 		new_marker=new_marker,
+		prev_color=prev_color,
+		new_color=new_color,
 		**kwargs,
 	)
 
