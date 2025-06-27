@@ -19,7 +19,8 @@ from .utils import _register_contrast
 
 @ensure_paths("spm_dir")
 def migrate_first_level_from_spm(
-    spm_dir: Union[str, Path], subject: str, task: str
+    spm_dir: Union[str, Path], subject: str, task: str,
+    spm_mat_path = None
 ):
     """
     Migrate first-level contrasts from SPM to BIDS, to be used with later
@@ -51,9 +52,10 @@ def migrate_first_level_from_spm(
     _get_model_folder(subject, task).mkdir(parents=True, exist_ok=True)
     _get_contrast_folder(subject, task).mkdir(parents=True, exist_ok=True)
 
-    spm_mat_path = spm_dir / "SPM.mat"
-    if not spm_mat_path.exists():
-        raise FileNotFoundError(f"'SPM.mat' not found in {spm_dir}")
+    if spm_mat_path is None:
+        spm_mat_path = spm_dir / "SPM.mat"
+        if not spm_mat_path.exists():
+            raise FileNotFoundError(f"'SPM.mat' not found in {spm_dir}")
 
     with h5py.File(spm_mat_path, "r") as f:
         spm = f["SPM"]

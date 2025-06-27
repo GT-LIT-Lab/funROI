@@ -34,9 +34,11 @@ class AnalysisSaver:
             / f"{self._type}_{id:04d}"
         )
         data_folder.mkdir(parents=True, exist_ok=True)
-        self._data_summary.to_csv(
-            data_folder / f"{self._type}_summary.csv", index=False
-        )
-        self._data_detail.to_csv(
-            data_folder / f"{self._type}_detail.csv", index=False
-        )
+        if self._data_summary is not None:
+            self._data_summary.to_csv(
+                data_folder / f"{self._type}_summary.csv", index=False
+            )
+        if self._data_detail is not None:
+            self._data_detail.to_csv(
+                data_folder / f"{self._type}_detail.csv", index=False
+            )
