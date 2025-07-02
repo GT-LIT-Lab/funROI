@@ -159,7 +159,7 @@ def run_first_level(
         design_matrix = design_matrix.fillna(0)
         design_matrix_path = _get_design_matrix_path(subject, task)
         design_matrix_path.parent.mkdir(parents=True, exist_ok=True)
-        design_matrix.to_csv(design_matrix_path)
+        design_matrix.to_csv(design_matrix_path, index=False)
 
         contrasts_ = contrasts.copy()
         for con_i, (contrast_name, contrast_expr) in enumerate(contrasts_):
