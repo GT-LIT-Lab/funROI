@@ -166,10 +166,11 @@ class OverlapEstimator(AnalysisSaver):
                     )
                 if self.orthogonalization == "all-but-one":
                     # To resolve the issue of asymmetric orthogonalization
-                    froi1_data2, froi1_run_labels2 = (
-                        _get_orthogonalized_froi_data(
-                            subject1, self.froi1, 2, self.orthogonalization
-                        )
+                    (
+                        froi1_data2,
+                        froi1_run_labels2,
+                    ) = _get_orthogonalized_froi_data(
+                        subject1, self.froi1, 2, self.orthogonalization
                     )
                     if froi1_data2 is None:
                         raise ValueError(
@@ -177,10 +178,11 @@ class OverlapEstimator(AnalysisSaver):
                             f"{self.froi1} for the orthogonalization, "
                             "skipping."
                         )
-                    froi2_data2, froi2_run_labels2 = (
-                        _get_orthogonalized_froi_data(
-                            subject2, self.froi2, 1, self.orthogonalization
-                        )
+                    (
+                        froi2_data2,
+                        froi2_run_labels2,
+                    ) = _get_orthogonalized_froi_data(
+                        subject2, self.froi2, 1, self.orthogonalization
                     )
                     if froi2_data2 is None:
                         raise ValueError(

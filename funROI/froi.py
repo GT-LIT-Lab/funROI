@@ -249,7 +249,10 @@ def _get_orthogonalized_froi_data(
 
 
 def _get_froi_data(
-    subject: str, config: FROIConfig, run_label: str, return_nifti: bool = False
+    subject: str,
+    config: FROIConfig,
+    run_label: str,
+    return_nifti: bool = False,
 ) -> np.ndarray:
     """
     Get the froi data by run label.
@@ -260,7 +263,9 @@ def _get_froi_data(
     """
     froi_path = _get_froi_path(subject, run_label, config)
     if not froi_path.exists():
-        data = _create_froi(subject, config, run_label, return_nifti=return_nifti)
+        data = _create_froi(
+            subject, config, run_label, return_nifti=return_nifti
+        )
         if data is None:
             return None
         return data
@@ -272,7 +277,10 @@ def _get_froi_data(
 
 
 def _create_froi(
-    subject: str, config: FROIConfig, run_label: str, return_nifti: bool = False
+    subject: str,
+    config: FROIConfig,
+    run_label: str,
+    return_nifti: bool = False,
 ) -> np.ndarray:
     """
     Create and save a fROI mask. The fROI labels are based on the parcels.

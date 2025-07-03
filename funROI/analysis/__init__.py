@@ -11,5 +11,5 @@ __all__ = [
     "EffectEstimator",
     "SpatialCorrelationEstimator",
     "OverlapEstimator",
-    "LateralityIndexAnalyzer"
+    "LateralityIndexAnalyzer",
 ]

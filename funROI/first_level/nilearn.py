@@ -10,7 +10,7 @@ from ..contrast import (
     _get_contrast_path,
     _get_design_matrix_path,
     _get_contrast_folder,
-    _get_residuals_path
+    _get_residuals_path,
 )
 from nilearn.glm.first_level import (
     first_level_from_bids,
@@ -20,6 +20,7 @@ from nilearn.glm import expression_to_contrast_vector
 from nilearn.image import load_img, new_img_like
 from .utils import _register_contrast
 import os
+from nilearn.interfaces.fmriprep import load_confounds
 
 IMAGE_SUFFIXES = {
     "z_score": "z",
@@ -47,6 +48,8 @@ def run_first_level(
     data_filter: Optional[List[Tuple[str, str]]] = [],
     contrasts: Optional[List[Tuple[str, Dict[str, float]]]] = [],
     orthogs: Optional[List[str]] = ["all-but-one", "odd-even"],
+    fd_threshold: Optional[float] = None,
+    std_dvars_threshold: Optional[float] = None,
     **kwargs,
 ):
     """
@@ -72,6 +75,12 @@ def run_first_level(
         contrast images are also generated for corresponding run labels.
         Supported strategies are 'all-but-one' and 'odd-even'. Default is both.
     :type orthogs: Optional[List[str]]
+    :param fd_threshold: Threshold for framewise displacement (FD) to be used
+        for confound generation.
+    :type fd_threshold: Optional[float]
+    :param std_dvars_threshold: Threshold for standard deviation of DVARS to be
+        used for confound generation.
+    :type std_dvars_threshold: Optional[float]
     :param kwargs: Additional keyword arguments for the first-level analysis.
         See Nilearn `first_level_from_bids` documentation for more information.
     :type kwargs: Dict
@@ -91,19 +100,50 @@ def run_first_level(
         bids_data_folder = get_bids_preprocessed_folder()
         derivatives_folder = "."
 
-    (models, models_run_imgs, models_events, models_confounds) = (
-        first_level_from_bids(
-            bids_data_folder,
-            task,
-            sub_labels=subjects,
-            space_label=space,
-            derivatives_folder=derivatives_folder,
-            img_filters=data_filter,
-            minimize_memory=False,
-            **kwargs,
-        )
+    (
+        models,
+        models_run_imgs,
+        models_events,
+        models_confounds,
+    ) = first_level_from_bids(
+        bids_data_folder,
+        task,
+        sub_labels=subjects,
+        space_label=space,
+        derivatives_folder=derivatives_folder,
+        img_filters=data_filter,
+        minimize_memory=False,
+        **kwargs,
     )
-
+    if fd_threshold is not None or std_dvars_threshold is not None:
+        if fd_threshold is None:
+            fd_threshold = np.inf
+        if std_dvars_threshold is None:
+            std_dvars_threshold = np.inf
+        for sub_i in range(len(models)):
+            imgs = models_run_imgs[sub_i]
+            confounds = models_confounds[sub_i]
+            confounds, masks = load_confounds(
+                imgs,
+                fd_threshold=fd_threshold,
+                std_dvars_threshold=std_dvars_threshold,
+                strategy=["scrub"],
+            )
+            n_runs = len(confounds)
+            for run_i in range(n_runs):
+                confounds_i = confounds[run_i]
+                masks_i = masks[run_i]
+                if masks_i is not None:
+                    outlier_indexes = set(confounds_i.index) - set(masks_i)
+                else:
+                    outlier_indexes = {}
+                for outlier_index in outlier_indexes:
+                    # all zero except for the outlier index
+                    models_confounds[sub_i][run_i][
+                        f"outlier_index_{outlier_index}"
+                    ] = (np.arange(len(confounds_i)) == outlier_index).astype(
+                        int
+                    )
     for sub_i in range(len(models)):
         model = models[sub_i]
         subject = model.subject_label

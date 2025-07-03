@@ -23,17 +23,17 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     # 'sphinx_gallery.gen_gallery',
-    'myst_nb',
-    'sphinx_design'
+    "myst_nb",
+    "sphinx_design",
 ]
 
 source_suffix = {
-    '.rst': 'restructuredtext',
-    '.ipynb': 'myst-nb',
-    '.myst': 'myst-nb',
+    ".rst": "restructuredtext",
+    ".ipynb": "myst-nb",
+    ".myst": "myst-nb",
 }
 
-nb_execution_mode = 'off'
+nb_execution_mode = "off"
 
 templates_path = ["_templates"]
 exclude_patterns = ["build", "funROI/tests"]

@@ -120,15 +120,16 @@ class EffectEstimator(AnalysisSaver):
                     data_i_froi = froi_all
                     effect_run_labels, froi_run_labels = ["all"], ["all"]
                 else:
-                    data_i_effect, run_label = (
-                        _get_orthogonalized_contrast_data(
-                            subject,
-                            self.task,
-                            contrast,
-                            2,
-                            "effect",
-                            self.orthogonalization,
-                        )
+                    (
+                        data_i_effect,
+                        run_label,
+                    ) = _get_orthogonalized_contrast_data(
+                        subject,
+                        self.task,
+                        contrast,
+                        2,
+                        "effect",
+                        self.orthogonalization,
                     )
                     data_i_froi = froi_orth
                     effect_run_labels, froi_run_labels = (

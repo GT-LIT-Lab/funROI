@@ -19,8 +19,7 @@ from .utils import _register_contrast
 
 @ensure_paths("spm_dir")
 def migrate_first_level_from_spm(
-    spm_dir: Union[str, Path], subject: str, task: str,
-    spm_mat_path = None
+    spm_dir: Union[str, Path], subject: str, task: str, spm_mat_path=None
 ):
     """
     Migrate first-level contrasts from SPM to BIDS, to be used with later

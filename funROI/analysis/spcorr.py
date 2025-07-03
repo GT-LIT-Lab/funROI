@@ -187,10 +187,11 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                 )[None, :]
                 effect1_run_labels = ["all"]
             else:
-                effect1_data, effect1_run_labels = (
-                    _get_orthogonalized_contrast_data(
-                        subject, task1, effect1, group1, "effect", orthtype
-                    )
+                (
+                    effect1_data,
+                    effect1_run_labels,
+                ) = _get_orthogonalized_contrast_data(
+                    subject, task1, effect1, group1, "effect", orthtype
                 )
 
             if run2 is not None:
@@ -204,10 +205,11 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                 )[None, :]
                 effect2_run_labels = ["all"]
             else:
-                effect2_data, effect2_run_labels = (
-                    _get_orthogonalized_contrast_data(
-                        subject, task2, effect2, group2, "effect", orthtype
-                    )
+                (
+                    effect2_data,
+                    effect2_run_labels,
+                ) = _get_orthogonalized_contrast_data(
+                    subject, task2, effect2, group2, "effect", orthtype
                 )
 
             if (
@@ -217,15 +219,17 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                 and okorth_froi_effect2
             ):
                 # Resolve the asymmetric orthogonalization
-                effect1_data_2, effect1_run_labels_2 = (
-                    _get_orthogonalized_contrast_data(
-                        subject, task1, effect1, 2, "effect", orthtype
-                    )
+                (
+                    effect1_data_2,
+                    effect1_run_labels_2,
+                ) = _get_orthogonalized_contrast_data(
+                    subject, task1, effect1, 2, "effect", orthtype
                 )
-                effect2_data_2, effect2_run_labels_2 = (
-                    _get_orthogonalized_contrast_data(
-                        subject, task2, effect2, 1, "effect", orthtype
-                    )
+                (
+                    effect2_data_2,
+                    effect2_run_labels_2,
+                ) = _get_orthogonalized_contrast_data(
+                    subject, task2, effect2, 1, "effect", orthtype
                 )
                 if effect1_data is not None and effect1_data_2 is not None:
                     effect1_data = np.concat([effect1_data, effect1_data_2])

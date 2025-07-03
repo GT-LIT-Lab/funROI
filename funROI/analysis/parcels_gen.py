@@ -550,7 +550,7 @@ class ParcelsGenerator:
         s : float
             Standard deviation of the Gaussian kernel
         """
-        var = s**2
+        var = s ** 2
         w1 = 0.5 * np.sqrt(2 / var)
         w2 = -0.5 / var
         w3 = np.sqrt(var / (2 * np.pi))
@@ -563,7 +563,7 @@ class ParcelsGenerator:
         ) + w3 * (
             np.exp(w2 * (x + 1) ** 2)
             + np.exp(w2 * (x - 1) ** 2)
-            - 2 * np.exp(w2 * x**2)
+            - 2 * np.exp(w2 * x ** 2)
         )
         krn[krn < 0] = 0  # Remove negative values
         return krn
@@ -589,7 +589,7 @@ class ParcelsGenerator:
         fwhm = np.asarray([fwhm]).ravel()
         fwhm = np.asarray([0.0 if elem is None else elem for elem in fwhm])
         affine = affine[:3, :3]  # Keep only the scale part.
-        vox_size = np.sqrt(np.sum(affine**2, axis=0))
+        vox_size = np.sqrt(np.sum(affine ** 2, axis=0))
         sigma = fwhm / (np.sqrt(8 * np.log(2)) * vox_size)
 
         for n, s in enumerate(sigma):

@@ -30,9 +30,10 @@ class LateralityIndexAnalyzer(AnalysisSaver):
         self._type = "laterality"
         self._data_summary = None
         self._data_detail = None
-        
 
-    def run(self, save: Optional[bool] = True) -> Optional[List[Tuple[str, float]]]:
+    def run(
+        self, save: Optional[bool] = True
+    ) -> Optional[List[Tuple[str, float]]]:
         """
         Run the analysis to compute the laterality index for each subject.
 
@@ -47,26 +48,25 @@ class LateralityIndexAnalyzer(AnalysisSaver):
             froi_img = _get_froi_data(
                 subject=subject,
                 config=self.froi,
-                return_nifti=True, 
-                run_label='all'
+                return_nifti=True,
+                run_label="all",
             )
             if froi_img is None:
-                print(f"fROI data not found for subject {subject}. Skipping...")
+                print(
+                    f"fROI data not found for subject {subject}. Skipping..."
+                )
                 continue
-            _data.append([subject] + list(self._run(froi_img)))    
+            _data.append([subject] + list(self._run(froi_img)))
 
         self._data_summary = pd.DataFrame(
-            _data, 
-            columns=["subject", "n_left", "n_right", "laterality_index"])
+            _data, columns=["subject", "n_left", "n_right", "laterality_index"]
+        )
 
         if save:
-            new_li_info = pd.DataFrame(
-                { "froi": [self.froi] }
-            )
+            new_li_info = pd.DataFrame({"froi": [self.froi]})
             self._save(new_li_info)
 
         return self._data_summary
-
 
     @staticmethod
     def _run(img: nib.Nifti1Image) -> Tuple[int, int, float]:
