@@ -165,7 +165,7 @@ def _get_design_matrix(subject: str, task: str) -> pd.DataFrame:
     design_matrix_path = _get_design_matrix_path(subject, task)
     if not design_matrix_path.exists():
         return None
-    return pd.read_csv(design_matrix_path, index_col=0)
+    return pd.read_csv(design_matrix_path)
 
 
 def _check_orthogonal(
