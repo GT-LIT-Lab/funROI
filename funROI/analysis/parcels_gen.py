@@ -75,7 +75,7 @@ class ParcelsGenerator:
         task: str,
         contrasts: List[str],
         p_threshold_type: str,
-        p_threshold_value: float,
+        p_threshold_value: float = 0.05,
         conjunction_type: Optional[str] = "and",
     ):
         """
