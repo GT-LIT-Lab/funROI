@@ -129,9 +129,12 @@ def run_first_level(
                 std_dvars_threshold=std_dvars_threshold,
                 strategy=["scrub"],
             )
-            n_runs = len(confounds)
+            if not isinstance(confounds, list):
+                models_confounds[sub_i] = [confounds]
+                masks = [masks]
+            n_runs = len(models_confounds[sub_i])
             for run_i in range(n_runs):
-                confounds_i = confounds[run_i]
+                confounds_i = models_confounds[sub_i][run_i]
                 masks_i = masks[run_i]
                 if masks_i is not None:
                     outlier_indexes = set(confounds_i.index) - set(masks_i)
@@ -256,6 +259,10 @@ def run_first_level(
                 contrast_name,
                 contrast_vector,
             )
+
+            # Continue if only one run is available
+            if len(run_imgs) == 1:
+                continue
 
             # Compute orthogonalized contrasts
             if "odd-even" in orthogs:
