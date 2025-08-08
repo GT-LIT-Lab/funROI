@@ -454,8 +454,7 @@ class ParcelsGenerator:
             self._get_analysis_parcels_folder(self.parcels_name)
             / f"parcels-{self.parcels_name}_sm-{self.smoothing_kernel_size}_spmsmooth-{self.use_spm_smooth}_voxthres-{self.overlap_thr_vox}_info.csv"
         )
-        if not parcel_info_pth.exists():
-            self.parcel_info.to_csv(parcel_info_pth, index=False)
+        self.parcel_info.to_csv(parcel_info_pth, index=False)
 
         parcels_pth = (
             self._get_analysis_parcels_folder(self.parcels_name)
