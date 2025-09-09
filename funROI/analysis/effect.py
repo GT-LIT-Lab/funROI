@@ -236,12 +236,14 @@ class EffectEstimator(AnalysisSaver):
 
         masked_effect = effect_data[None, :, :] * froi_masks_expanded
         effect_size = np.nanmean(masked_effect, axis=(-1))
+        localizer_size = np.nansum(froi_masks_expanded, axis=(-1))
         df_detail = pd.DataFrame(
-            {  # froi, run, size
+            {
                 "froi": np.repeat(froi_labels, effect_data.shape[0]),
                 "run": np.tile(
                     np.arange(effect_data.shape[0]), len(froi_labels)
                 ),
+                "n_voxels": localizer_size.flatten(),
                 "size": effect_size.flatten(),
             }
         )

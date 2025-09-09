@@ -65,6 +65,8 @@ class ParcelsConfig(dict):
             / f"parcels-{name}"
             / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
         )
+        if not os.path.exists(parcels_path):
+            raise FileNotFoundError(f"Parcels file not found: {parcels_path}")
         if os.path.exists(
             _get_parcels_folder()
             / f"parcels-{name}"
