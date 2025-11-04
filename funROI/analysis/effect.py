@@ -28,6 +28,11 @@ class EffectEstimator(AnalysisSaver):
     :param orthogonalization: The orthogonalization method. Options are
         'all-but-one' and 'odd-even'. Default is 'all-but-one'.
     :type orthogonalization: Optional[str]
+    :param froi_run_label: Label of the run to extract effects for. If not specified,
+        the method will automatically use orthogonalization when the effects are
+        not orthogonal to the fROI contrasts, and all runs if the effects are
+        orthogonal to the fROI contrasts.
+    :type run_label: Optional[str]
     """
 
     @validate_arguments(orthogonalization={"all-but-one", "odd-even"})
@@ -37,12 +42,13 @@ class EffectEstimator(AnalysisSaver):
         froi: FROIConfig,
         fill_na_with_zero: Optional[bool] = True,
         orthogonalization: Optional[str] = "all-but-one",
+        froi_run_label: Optional[str] = None,
     ):
         self.subjects = subjects
         self.froi = froi
         self.fill_na_with_zero = fill_na_with_zero
         self.orthogonalization = orthogonalization
-
+        self.froi_run_label = froi_run_label
         self._type = "effect"
         self._data_summary = None
         self._data_detail = None
@@ -51,7 +57,7 @@ class EffectEstimator(AnalysisSaver):
         _, self.froi_labels = get_parcels(self.froi.parcels)
 
     def run(
-        self, task: str, effects: List[str]
+        self, task: str, effects: List[str], froi_run_label: Optional[str] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Run the effect estimation. The results are stored in the analysis
@@ -61,7 +67,11 @@ class EffectEstimator(AnalysisSaver):
         :type task: str
         :param effects: List of effect labels.
         :type effects: List[str]
-
+        :param froi_run_label: Label of the run to extract effects for. If not specified,
+            the method will automatically use orthogonalization when the effects are
+            not orthogonal to the fROI contrasts, and all runs if the effects are
+            orthogonal to the fROI contrasts.
+        :type froi_run_label: Optional[str]
         :return: The results are returned as a tuple of two dataframes: the
             effect estimates averaged across runs, and the effect estimates
             detailed by run.
@@ -70,48 +80,72 @@ class EffectEstimator(AnalysisSaver):
         self.task = task
         self.effects = effects
 
+        use_customized_runs = False
+        if froi_run_label is not None or self.froi_run_label is not None:
+            if froi_run_label is not None and self.froi_run_label is not None:
+                use_customized_runs = True
+            else:
+                raise ValueError(
+                    "froi_run_label and self.froi_run_label must both be specified"
+                )
+
         # Load the data
         data_summary = []
         data_detail = []
         for subject in self.subjects:
-            okorths = np.array(
-                [
-                    _check_orthogonal(
-                        subject,
-                        self.task,
-                        [contrast],
-                        self.froi.task,
-                        self.froi.contrasts,
-                    )
-                    for contrast in self.effects
-                ]
-            )
-            okorth = np.all(okorths)
-            contrasts = np.array(self.effects)
-
-            froi_all = _get_froi_data(subject, self.froi, "all")
-            if froi_all is None:
-                warnings.warn(
-                    f"Data not found for subject {subject}, fROI {self.froi}, "
-                    "skipping."
+            if not use_customized_runs:
+                okorths = np.array(
+                    [
+                        _check_orthogonal(
+                            subject,
+                            self.task,
+                            [contrast],
+                            self.froi.task,
+                            self.froi.contrasts,
+                        )
+                        for contrast in self.effects
+                    ]
                 )
-                continue
-            froi_all = froi_all[None, :]
+                okorth = np.all(okorths)
+                contrasts = np.array(self.effects)
 
-            if not okorth:
-                froi_orth, froi_orth_labels = _get_orthogonalized_froi_data(
-                    subject, self.froi, 1, self.orthogonalization
-                )
-                if froi_orth is None:
+                froi_all = _get_froi_data(subject, self.froi, "all")
+                if froi_all is None:
                     warnings.warn(
-                        f"Data not found for subject {subject}, fROI {self.froi} "
-                        "for the speicial orthogonalization, skipping those "
-                        "non-orthogonal effects."
+                        f"Data not found for subject {subject}, fROI {self.froi}, "
+                        "skipping."
                     )
                     continue
+                froi_all = froi_all[None, :]
+
+                if not okorth:
+                    froi_orth, froi_orth_labels = _get_orthogonalized_froi_data(
+                        subject, self.froi, 1, self.orthogonalization
+                    )
+                    if froi_orth is None:
+                        warnings.warn(
+                            f"Data not found for subject {subject}, fROI {self.froi} "
+                            "for the speicial orthogonalization, skipping those "
+                            "non-orthogonal effects."
+                        )
+                        continue
 
             for i, contrast in enumerate(contrasts):
-                if okorth:
+                if use_customized_runs:
+                    data_i_effect = _get_contrast_data(
+                        subject, self.task, froi_run_label, contrast, "effect"
+                    )
+                    if data_i_effect is not None:
+                        data_i_effect = data_i_effect[None, :]
+                    data_i_froi = _get_froi_data(subject, self.froi, froi_run_label)
+                    if data_i_froi is None:
+                        warnings.warn(
+                            f"Data not found for subject {subject}, fROI {self.froi} "
+                            f"for the run label {froi_run_label}, skipping."
+                        )
+                        continue
+                    effect_run_labels, froi_run_labels = [froi_run_label], [froi_run_label]
+                elif okorth:
                     data_i_effect = _get_contrast_data(
                         subject, self.task, "all", contrast, "effect"
                     )
