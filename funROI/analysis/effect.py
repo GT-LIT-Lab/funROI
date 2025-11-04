@@ -57,7 +57,7 @@ class EffectEstimator(AnalysisSaver):
         _, self.froi_labels = get_parcels(self.froi.parcels)
 
     def run(
-        self, task: str, effects: List[str], froi_run_label: Optional[str] = None
+        self, task: str, effects: List[str], effect_run_label: Optional[str] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Run the effect estimation. The results are stored in the analysis
@@ -67,11 +67,11 @@ class EffectEstimator(AnalysisSaver):
         :type task: str
         :param effects: List of effect labels.
         :type effects: List[str]
-        :param froi_run_label: Label of the run to extract effects for. If not specified,
+        :param effect_run_label: Label of the run to extract effects for. If not specified,
             the method will automatically use orthogonalization when the effects are
             not orthogonal to the fROI contrasts, and all runs if the effects are
             orthogonal to the fROI contrasts.
-        :type froi_run_label: Optional[str]
+        :type effect_run_label: Optional[str]
         :return: The results are returned as a tuple of two dataframes: the
             effect estimates averaged across runs, and the effect estimates
             detailed by run.
@@ -81,12 +81,12 @@ class EffectEstimator(AnalysisSaver):
         self.effects = effects
 
         use_customized_runs = False
-        if froi_run_label is not None or self.froi_run_label is not None:
-            if froi_run_label is not None and self.froi_run_label is not None:
+        if effect_run_label is not None or self.froi_run_label is not None:
+            if effect_run_label is not None and self.froi_run_label is not None:
                 use_customized_runs = True
             else:
                 raise ValueError(
-                    "froi_run_label and self.froi_run_label must both be specified"
+                    "effect_run_label and froi_run_label must both be specified"
                 )
 
         # Load the data
@@ -133,18 +133,18 @@ class EffectEstimator(AnalysisSaver):
             for i, contrast in enumerate(contrasts):
                 if use_customized_runs:
                     data_i_effect = _get_contrast_data(
-                        subject, self.task, froi_run_label, contrast, "effect"
+                        subject, self.task, effect_run_label, contrast, "effect"
                     )
                     if data_i_effect is not None:
                         data_i_effect = data_i_effect[None, :]
-                    data_i_froi = _get_froi_data(subject, self.froi, froi_run_label)
+                    data_i_froi = _get_froi_data(subject, self.froi, self.froi_run_label)
                     if data_i_froi is None:
                         warnings.warn(
                             f"Data not found for subject {subject}, fROI {self.froi} "
-                            f"for the run label {froi_run_label}, skipping."
+                            f"for the run label {self.froi_run_label}, skipping."
                         )
                         continue
-                    effect_run_labels, froi_run_labels = [froi_run_label], [froi_run_label]
+                    effect_run_labels, froi_run_labels = [effect_run_label], [self.froi_run_label]
                 elif okorth:
                     data_i_effect = _get_contrast_data(
                         subject, self.task, "all", contrast, "effect"
