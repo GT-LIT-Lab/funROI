@@ -465,8 +465,13 @@ class ParcelsGenerator:
 
     @staticmethod
     def _harmonic_mean(data: np.ndarray) -> float:
-        data = np.array(data).flatten()
-        return len(data) / np.sum(1 / data)
+        data = np.asarray(data).flatten().astype(float)
+        data = data[~np.isnan(data)]
+        if data.size == 0:
+            return 0.0
+        if np.any(data <= 0):
+            return 0.0
+        return data.size / np.sum(1.0 / data)
 
     @classmethod
     def _watershed(cls, A: np.ndarray) -> np.ndarray:
