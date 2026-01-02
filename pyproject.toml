@@ -14,7 +14,8 @@ dependencies = [
     "pandas>=2.2.0",
     "scipy>=1.8.0",
     "statsmodels",
-    "nilearn"
+    "nilearn",
+    "boto3"
 ]
 description = "A Python package for functional ROI analyses of fMRI data"
 homepage = "https://github.com/GT-LIT-Lab/funROI"
