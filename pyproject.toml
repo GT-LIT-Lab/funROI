@@ -19,7 +19,6 @@ dependencies = [
 description = "A Python package for functional ROI analyses of fMRI data"
 homepage = "https://github.com/GT-LIT-Lab/funROI"
 readme = "README.rst"
-readme_content_type = "text/x-rst"
 license = { file = "LICENSE" }
 keywords = ["fMRI", "ROI", "neuroimaging", "data analysis"]
 classifiers = [
@@ -49,16 +48,15 @@ build-backend = "flit_core.buildapi"
 line-length = 79
 
 [tool.coverage.run]
-source = ["./funROI"]
+source = ["funROI"]
 branch = true
-omit = ["funROI/tests/*"]
+omit = ["*/tests/*", "*/__init__.py", "*/conftest.py"]
 
 [tool.coverage.html]
 directory = "htmlcov"
 title = "Coverage Report"
 
 [tool.pytest.ini_options]
-addopts = "--cov=funROI --cov-branch --cov-report=html"
 log_cli = true
 log_cli_level = "INFO"
 log_format = "%(asctime)s [%(levelname)s] %(message)s"
