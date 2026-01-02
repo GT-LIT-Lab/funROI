@@ -1,11 +1,15 @@
 funROI
 ========================
 
-|docs|
+|tests| |docs|
+
+.. |tests| image:: https://github.com/GT-LIT-Lab/funROI/actions/workflows/tests.yml/badge.svg
+   :alt: Tests
+   :target: https://github.com/GT-LIT-Lab/funROI/actions/workflows/tests.yml
 
 .. |docs| image:: https://readthedocs.org/projects/funroi/badge
-    :alt: Documentation Status
-    :target: https://funroi.readthedocs.io/en/latest/?badge=latest
+   :alt: Documentation Status
+   :target: https://funroi.readthedocs.io/en/latest/?badge=latest
 
 The **funROI** (FUNctional Region Of Interest) toolbox is designed to provide robust analytic methods for fMRI data analyses that accommodate inter-subject variability in the precise locations of functional activations. 
 

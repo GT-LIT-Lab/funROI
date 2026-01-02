@@ -226,6 +226,8 @@ def save_parcels(parcels_img: Nifti1Image, label_dict: dict, name: str):
     """
     parcels_path = _get_parcels_folder() / f"{name}.nii.gz"
     parcels_labels_path = _get_parcels_folder() / f"{name}.json"
+    if not parcels_path.parent.exists():
+        parcels_path.parent.mkdir(parents=True, exist_ok=True)
     parcels_img.to_filename(parcels_path)
     with open(parcels_labels_path, "w") as f:
         json.dump(label_dict, f)

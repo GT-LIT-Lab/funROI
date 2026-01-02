@@ -6,19 +6,14 @@ from .utils import (
 from . import get_bids_deriv_folder
 from .contrast import (
     _get_contrast_data,
-    _get_orthogonalized_contrast_data,
     _get_contrast_runs,
-    _get_contrast_runs_by_group,
     _get_contrast_path,
 )
 from typing import Optional, List, Union, Tuple
-from nibabel.nifti1 import Nifti1Image
 import numpy as np
 from nilearn.image import load_img, new_img_like
-from collections import namedtuple
 import pandas as pd
 from statsmodels.stats.multitest import fdrcorrection
-import logging
 
 
 class FROIConfig(dict):
@@ -387,7 +382,7 @@ def _threshold_p_map(
             mask = fdrcorrection(pvals, alpha=threshold_value)[0]
             froi_mask[:, i] = mask
     elif threshold_type == "bonferroni":
-        froi_mask.flat[data.flatten() < threshold_value / data.shape[-1]] = 1
+        froi_mask.flat[data.flatten() < (threshold_value / data.shape[0])] = 1
     else:
         froi_mask.flat[data.flatten() < threshold_value] = 1
 
