@@ -70,6 +70,8 @@ def migrate_first_level_from_spm(
             design_matrix[()].T, columns=design_matrix_names
         )
         design_matrix_path = _get_design_matrix_path(subject, task)
+        if not design_matrix_path.parent.exists():
+            design_matrix_path.parent.mkdir(parents=True, exist_ok=True)
         design_matrix_df.to_csv(design_matrix_path, index=False)
 
         con_fnames = f["/SPM/xCon/name"]

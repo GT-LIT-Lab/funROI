@@ -1,4 +1,3 @@
-import warnings
 import os
 import boto3
 import pandas as pd
@@ -200,4 +199,4 @@ def fetch_data(
         except Exception as e:
             print(f"Error processing {subject}: {e}")
 
-    # shutil.rmtree(data_dir / "HCP_1200")
+    shutil.rmtree(data_dir / "HCP_1200")

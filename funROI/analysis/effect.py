@@ -9,7 +9,6 @@ from ..parcels import get_parcels
 import pandas as pd
 from ..utils import validate_arguments
 import numpy as np
-import logging
 import warnings
 from .utils import AnalysisSaver
 

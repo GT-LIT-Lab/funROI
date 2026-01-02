@@ -1,0 +1,8 @@
+[run]
+source = funROI
+
+[report]
+omit =
+    */tests/*
+    */__init__.py
+    */conftest.py
