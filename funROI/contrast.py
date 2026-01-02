@@ -1,21 +1,13 @@
 from . import get_bids_deriv_folder
-from nilearn.glm import compute_fixed_effects
-from nilearn.image import load_img, new_img_like
-from nilearn.glm import expression_to_contrast_vector
-from scipy.stats import t as t_dist
-from typing import List, Tuple, Optional, Union
-import os
+from nilearn.image import load_img
+from typing import List, Tuple, Optional
 import pandas as pd
 import ast
-import warnings
-from nibabel.nifti1 import Nifti1Image
 import numpy as np
-from statsmodels.stats.multitest import fdrcorrection
 import scipy
 from .utils import validate_arguments, _get_orthogonalized_run_labels
 import glob
 import re
-import logging
 
 
 _get_contrast_folder = lambda subject, task: (
