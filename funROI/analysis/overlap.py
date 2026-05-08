@@ -190,14 +190,10 @@ class OverlapEstimator(AnalysisSaver):
                             f"{self.froi2} for the orthogonalization, "
                             "skipping."
                         )
-                    froi1_data = np.concat([froi1_data, froi1_data2])
-                    froi2_data = np.concat([froi2_data, froi2_data2])
-                    froi1_run_labels = np.concat(
-                        [froi1_run_labels, froi1_run_labels2]
-                    )
-                    froi2_run_labels = np.concat(
-                        [froi2_run_labels, froi2_run_labels2]
-                    )
+                    froi1_data = np.concatenate([froi1_data, froi1_data2])
+                    froi2_data = np.concatenate([froi2_data, froi2_data2])
+                    froi1_run_labels = froi1_run_labels + froi1_run_labels2
+                    froi2_run_labels = froi2_run_labels + froi2_run_labels2
 
         df_summary, df_detail = self._run(froi1_data, froi2_data, self.kind)
         if not is_parcels1 or not is_parcels2:

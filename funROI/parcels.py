@@ -5,7 +5,7 @@ from nibabel.nifti1 import Nifti1Image
 from nilearn.image import load_img, math_img
 from pathlib import Path
 import numpy as np
-from . import get_analysis_output_folder
+from .settings import get_analysis_output_folder
 from .utils import ensure_paths
 import pandas as pd
 

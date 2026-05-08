@@ -231,12 +231,16 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                     subject, task2, effect2, 1, "effect", orthtype
                 )
                 if effect1_data is not None and effect1_data_2 is not None:
-                    effect1_data = np.concat([effect1_data, effect1_data_2])
+                    effect1_data = np.concatenate(
+                        [effect1_data, effect1_data_2]
+                    )
                     effect1_run_labels = (
                         effect1_run_labels + effect1_run_labels_2
                     )
                 if effect2_data is not None and effect2_data_2 is not None:
-                    effect2_data = np.concat([effect2_data, effect2_data_2])
+                    effect2_data = np.concatenate(
+                        [effect2_data, effect2_data_2]
+                    )
                     effect2_run_labels = (
                         effect2_run_labels + effect2_run_labels_2
                     )

@@ -1,7 +1,7 @@
 from typing import List, Optional, Union, Tuple, Dict
 import numpy as np
 import pandas as pd
-from .. import (
+from ..settings import (
     get_bids_data_folder,
     get_bids_preprocessed_folder_relative,
     get_bids_preprocessed_folder,
@@ -162,7 +162,7 @@ def run_first_level(
         contrasts_folder = _get_contrast_folder(subject, task)
         contrasts_folder.mkdir(parents=True, exist_ok=True)
 
-        run_img_grand = np.concat(
+        run_img_grand = np.concatenate(
             [img.get_fdata() for img in run_imgs], axis=-1
         )
         run_img_grand = new_img_like(run_imgs[0], run_img_grand)

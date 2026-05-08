@@ -105,7 +105,6 @@ def test_froi_generator_select_label_not_found_raises(tmp_settings, monkeypatch)
         gen.select(froi_label="NOT_A_REAL_LABEL", return_results=False)
 
 
-@pytest.mark.xfail(reason="Bug in select(): overwrites list `data` with ndarray then calls data.append(...)")
 def test_froi_generator_select_returns_results_when_valid_label(tmp_settings, monkeypatch):
     cfg = DummyFROIConfig(task="T", parcels="P")
     gen = froi_gen_mod.FROIGenerator(subjects=["S1"], froi=cfg, run_label="all")

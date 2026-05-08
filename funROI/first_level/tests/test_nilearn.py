@@ -230,3 +230,70 @@ def test_run_first_level_uses_preprocessed_folder_when_relative_derivatives_miss
 
     assert called["bids_folder"] == tmp_path / "derivatives"
     assert called["derivatives_folder"] == "."
+
+
+def test_run_first_level_adds_scrub_outlier_columns(tmp_path, monkeypatch):
+    out = _mk_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: tmp_path / "bids")
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: tmp_path / "derivatives"
+    )
+
+    model = FakeFirstLevelModel(subject_label="100307", t_r=0.72)
+
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (
+            [model],
+            [["fake_run_01.nii.gz"]],
+            [[
+                pd.DataFrame(
+                    {
+                        "trial_type": ["math"],
+                        "onset": [0.0],
+                        "duration": [1.0],
+                    }
+                )
+            ]],
+            [[pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]})]],
+        ),
+    )
+    monkeypatch.setattr(
+        nl, "load_img", lambda _: FakeImg(np.zeros((2, 2, 2, 4)))
+    )
+    monkeypatch.setattr(
+        nl, "new_img_like", lambda ref, data: FakeImg(np.asarray(data))
+    )
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        nl,
+        "load_confounds",
+        lambda imgs, **kwargs: (
+            pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]}),
+            np.array([0, 2, 3]),
+        ),
+    )
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        contrasts=[("math_gt_story", {"math": 1.0})],
+        fd_threshold=0.5,
+        std_dvars_threshold=None,
+        orthogs=[],
+    )
+
+    dm = pd.read_csv(out / "design" / "sub-100307_task-LANGUAGE_design.csv")
+    assert "run-01_outlier_index_1" in dm.columns
+    assert dm["run-01_outlier_index_1"].tolist() == [0, 1, 0, 0]

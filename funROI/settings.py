@@ -81,3 +81,33 @@ class Settings:
         self.bids_deriv_folder = None
         self.bids_preprocessed_folder = None
         self.analysis_output_folder = None
+
+
+_settings = Settings()
+
+set_bids_data_folder = _settings.set_bids_data_folder
+get_bids_data_folder = _settings.get_bids_data_folder
+set_bids_deriv_folder = _settings.set_bids_deriv_folder
+get_bids_deriv_folder = _settings.get_bids_deriv_folder
+set_bids_preprocessed_folder = _settings.set_bids_preprocessed_folder
+get_bids_preprocessed_folder = _settings.get_bids_preprocessed_folder
+get_bids_preprocessed_folder_relative = (
+    _settings.get_bids_preprocessed_folder_relative
+)
+set_analysis_output_folder = _settings.set_analysis_output_folder
+get_analysis_output_folder = _settings.get_analysis_output_folder
+reset_settings = _settings.reset
+
+__all__ = [
+    "Settings",
+    "set_bids_data_folder",
+    "get_bids_data_folder",
+    "set_bids_deriv_folder",
+    "get_bids_deriv_folder",
+    "set_bids_preprocessed_folder",
+    "get_bids_preprocessed_folder",
+    "get_bids_preprocessed_folder_relative",
+    "set_analysis_output_folder",
+    "get_analysis_output_folder",
+    "reset_settings",
+]

@@ -3,12 +3,14 @@ from .utils import (
     validate_arguments,
     _get_orthogonalized_run_labels,
 )
-from . import get_bids_deriv_folder
+from ._registry import get_or_create_record_id
+from .settings import get_bids_deriv_folder
 from .contrast import (
     _get_contrast_data,
     _get_contrast_runs,
     _get_contrast_path,
 )
+from pathlib import Path
 from typing import Optional, List, Union, Tuple
 import numpy as np
 from nilearn.image import load_img, new_img_like
@@ -102,98 +104,34 @@ _get_froi_info_path = lambda subject, task: (
 )
 
 
+def _build_froi_registry_record(config: FROIConfig) -> dict:
+    parcels = config.parcels
+    if not isinstance(parcels, ParcelsConfig):
+        parcels = ParcelsConfig(parcels)
+
+    return {
+        "contrasts": str(sorted(config.contrasts)),
+        "conjunction_type": config.conjunction_type,
+        "threshold_type": config.threshold_type,
+        "threshold_value": config.threshold_value,
+        "parcels": parcels.parcels_path,
+        "labels": parcels.labels_path,
+    }
+
+
 def _get_froi_path(
     subject: str,
     run_label: str,
     config: FROIConfig,
     create: Optional[bool] = False,
-) -> str:
-    (
-        task,
-        contrasts,
-        conjunction_type,
-        threshold_type,
-        threshold_value,
-        parcels,
-    ) = (
-        config.task,
-        config.contrasts,
-        config.conjunction_type,
-        config.threshold_type,
-        config.threshold_value,
-        config.parcels,
+) -> Path:
+    task = config.task
+    record_id = get_or_create_record_id(
+        _get_froi_info_path(subject, task),
+        _build_froi_registry_record(config),
+        create=create,
     )
-
-    if not isinstance(parcels, ParcelsConfig):
-        parcels = ParcelsConfig(parcels)
-    contrasts = str(sorted(contrasts))
-
-    frois_new = pd.DataFrame(
-        {
-            "contrasts": [contrasts],
-            "conjunction_type": [conjunction_type],
-            "threshold_type": [threshold_type],
-            "threshold_value": [threshold_value],
-            "parcels": [parcels.parcels_path],
-            "labels": [parcels.labels_path],
-        }
-    )
-
-    info_path = _get_froi_info_path(subject, task)
-    if not info_path.exists():
-        id = 0
-        if create:
-            _get_subject_froi_folder(subject, task).mkdir(
-                parents=True, exist_ok=True
-            )
-            frois_new["id"] = 0
-            frois_new.to_csv(info_path, index=False)
-    else:
-        frois = pd.read_csv(info_path)
-
-        frois_matched = frois[
-            frois.apply(
-                lambda row: (
-                    (row["contrasts"] == contrasts)
-                    and (
-                        (row["conjunction_type"] == conjunction_type)
-                        or (
-                            pd.isna(row["conjunction_type"])
-                            and conjunction_type is None
-                        )
-                    )
-                    and (row["threshold_type"] == threshold_type)
-                    and (row["threshold_value"] == threshold_value)
-                    and (
-                        (row["parcels"] == str(parcels.parcels_path))
-                        or (
-                            pd.isna(row["parcels"])
-                            and parcels.parcels_path is None
-                        )
-                    )
-                    and (
-                        (row["labels"] == str(parcels.labels_path))
-                        or (
-                            pd.isna(row["labels"])
-                            and parcels.labels_path is None
-                        )
-                    )
-                ),
-                axis=1,
-            )
-        ]
-
-        if len(frois_matched) == 0:
-            id = frois["id"].max() + 1
-            if create:
-                frois_new["id"] = id
-                frois = pd.concat([frois, frois_new], ignore_index=True)
-                frois.to_csv(info_path, index=False)
-        else:
-            id = frois_matched["id"].values[0]
-
-    id = int(id)
-    id = f"{id:04d}"
+    id = f"{int(record_id):04d}"
     return (
         _get_subject_froi_folder(subject, task)
         / f"sub-{subject}_task-{task}_run-{run_label}_froi-{id}_mask.nii.gz"

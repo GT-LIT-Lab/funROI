@@ -1,4 +1,4 @@
-from . import get_bids_deriv_folder
+from .settings import get_bids_deriv_folder
 from nilearn.image import load_img
 from typing import List, Tuple, Optional
 import pandas as pd

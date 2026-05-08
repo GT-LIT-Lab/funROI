@@ -1,13 +1,17 @@
 from typing import List, Optional, Union, Tuple
-from .. import get_analysis_output_folder
-from ..froi import FROIConfig, _create_froi, _get_froi_path
-from ..parcels import get_parcels, ParcelsConfig
-import numpy as np
+from .._registry import get_or_create_record_id
+from ..froi import (
+    FROIConfig,
+    _build_froi_registry_record,
+    _create_froi,
+    _get_froi_path,
+)
+from ..parcels import get_parcels
+from ..settings import get_analysis_output_folder
 from nibabel.nifti1 import Nifti1Image
 from nilearn.image import load_img
 import warnings
 from pathlib import Path
-import pandas as pd
 
 
 class FROIGenerator:
@@ -112,12 +116,12 @@ class FROIGenerator:
         if label_numeric is None:
             raise ValueError(f"Label {froi_label} not found in parcels labels")
 
-        data = []
+        results = []
         for subject, img in zip(self.subjects, self._data):
-            data = img.get_fdata()
-            data[data != label_numeric] = 0
-            img = Nifti1Image(data, img.affine)
-            data.append((subject, img))
+            img_data = img.get_fdata()
+            img_data[img_data != label_numeric] = 0
+            img = Nifti1Image(img_data, img.affine)
+            results.append((subject, img))
 
             # Save the the output directory
             froi_pth = self._get_analysis_froi_path(
@@ -130,7 +134,7 @@ class FROIGenerator:
             img.to_filename(froi_pth)
 
         if return_results:
-            return data
+            return results
 
     @staticmethod
     def _get_analysis_froi_folder(task: str) -> Path:
@@ -149,89 +153,13 @@ class FROIGenerator:
         create: Optional[bool] = False,
         froi_label: Optional[str] = None,
     ) -> Path:
-        (
-            task,
-            contrasts,
-            conjunction_type,
-            threshold_type,
-            threshold_value,
-            parcels,
-        ) = (
-            config.task,
-            config.contrasts,
-            config.conjunction_type,
-            config.threshold_type,
-            config.threshold_value,
-            config.parcels,
+        task = config.task
+        record_id = get_or_create_record_id(
+            cls._get_analysis_froi_info_path(task),
+            _build_froi_registry_record(config),
+            create=create,
         )
-
-        if not isinstance(parcels, ParcelsConfig):
-            parcels = ParcelsConfig(parcels)
-        contrasts = str(sorted(contrasts))
-
-        frois_new = pd.DataFrame(
-            {
-                "contrasts": [contrasts],
-                "conjunction_type": [conjunction_type],
-                "threshold_type": [threshold_type],
-                "threshold_value": [threshold_value],
-                "parcels": [parcels.parcels_path],
-                "labels": [parcels.labels_path],
-            }
-        )
-
-        froi_info_pth = cls._get_analysis_froi_info_path(config.task)
-        if not froi_info_pth.exists():
-            id = 0
-            if create:
-                frois_new["id"] = id
-                froi_info_pth.parent.mkdir(parents=True, exist_ok=True)
-                frois_new.to_csv(froi_info_pth, index=False)
-        else:
-            frois = pd.read_csv(froi_info_pth)
-            frois_matched = frois[
-                frois.apply(
-                    lambda row: (
-                        (row["contrasts"] == contrasts)
-                        and (
-                            (row["conjunction_type"] == conjunction_type)
-                            or (
-                                pd.isna(row["conjunction_type"])
-                                and conjunction_type is None
-                            )
-                        )
-                        and (row["threshold_type"] == threshold_type)
-                        and (row["threshold_value"] == threshold_value)
-                        and (
-                            (row["parcels"] == str(parcels.parcels_path))
-                            or (
-                                pd.isna(row["parcels"])
-                                and parcels.parcels_path is None
-                            )
-                        )
-                        and (
-                            (row["labels"] == str(parcels.labels_path))
-                            or (
-                                pd.isna(row["labels"])
-                                and parcels.labels_path is None
-                            )
-                        )
-                    ),
-                    axis=1,
-                )
-            ]
-            if not frois_matched.empty:
-                id = frois_matched["id"].values[0]
-            else:
-                id = frois["id"].max() + 1
-                if create:
-                    frois_new["id"] = id
-                    frois_new = pd.concat(
-                        [frois, frois_new], ignore_index=True
-                    )
-                    frois_new.to_csv(froi_info_pth, index=False)
-
-        id = f"{id:04d}"
+        id = f"{int(record_id):04d}"
         froi_folder = cls._get_analysis_froi_folder(task) / f"froi_{id}"
         froi_folder.mkdir(parents=True, exist_ok=True)
 

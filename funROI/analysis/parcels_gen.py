@@ -1,7 +1,7 @@
 from typing import List, Optional, Union, Tuple
 from nibabel.nifti1 import Nifti1Image
 from ..utils import validate_arguments
-from .. import get_analysis_output_folder
+from ..settings import get_analysis_output_folder
 from ..froi import _get_froi_path, FROIConfig, _get_froi_runs, _create_froi
 import warnings
 import numpy as np
