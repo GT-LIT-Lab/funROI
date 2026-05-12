@@ -55,11 +55,13 @@ def _mk_paths(monkeypatch, tmp_path: Path):
     contrast_folder = lambda s, t: p("contrasts", f"sub-{s}", f"task-{t}")
     contrast_path   = lambda s, t, r, c, x: contrast_folder(s, t) / f"run-{r}_{c}_{x}.nii.gz"
     design_matrix_path = lambda s, t: p("design", f"sub-{s}_task-{t}_design.csv")
+    run_group_info_path = lambda s, t: p("design", f"sub-{s}_task-{t}_run-groups.csv")
     residuals_path     = lambda s, t: p("resid",  f"sub-{s}_task-{t}_residuals.nii.gz")
 
     monkeypatch.setattr(nl, "_get_contrast_folder", contrast_folder)
     monkeypatch.setattr(nl, "_get_contrast_path", contrast_path)
     monkeypatch.setattr(nl, "_get_design_matrix_path", design_matrix_path)
+    monkeypatch.setattr(nl, "_get_run_group_info_path", run_group_info_path)
     monkeypatch.setattr(nl, "_get_residuals_path", residuals_path)
 
     return out
@@ -131,6 +133,11 @@ def test_run_first_level_writes_design_residuals_and_contrasts(tmp_path, monkeyp
     resid_path = out / "resid" / "sub-100307_task-LANGUAGE_residuals.nii.gz"
     assert resid_path.exists()
 
+    run_group_info = pd.read_csv(
+        out / "design" / "sub-100307_task-LANGUAGE_run-groups.csv"
+    )
+    assert "all" in set(run_group_info["run_label"])
+
     assert len(registered) == 1
     assert registered[0][2] == "math_gt_story"
     assert len(registered[0][3]) == len(dm.columns)
@@ -146,6 +153,76 @@ def test_run_first_level_writes_design_residuals_and_contrasts(tmp_path, monkeyp
                 / f"run-{run}_math_gt_story_{suf}.nii.gz"
             )
             assert p.exists(), f"missing {p}"
+
+
+def test_run_first_level_writes_custom_run_groups(tmp_path, monkeypatch):
+    out = _mk_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: tmp_path / "bids")
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: tmp_path / "derivatives"
+    )
+
+    model = FakeFirstLevelModel(subject_label="100307", t_r=0.72)
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (
+            [model],
+            [["fake_run_01.nii.gz", "fake_run_02.nii.gz", "fake_run_03.nii.gz"]],
+            [[
+                pd.DataFrame(
+                    {
+                        "trial_type": ["math"],
+                        "onset": [0.0],
+                        "duration": [1.0],
+                    }
+                )
+                for _ in range(3)
+            ]],
+            [[pd.DataFrame({"conf1": [0, 0, 0, 0]}) for _ in range(3)]],
+        ),
+    )
+    monkeypatch.setattr(
+        nl, "load_img", lambda _: FakeImg(np.zeros((2, 2, 2, 4), dtype=float))
+    )
+    monkeypatch.setattr(
+        nl, "new_img_like", lambda _ref, data: FakeImg(np.asarray(data))
+    )
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        contrasts=[("math_gt_baseline", {"math": 1.0})],
+        orthogs=["all-but-one"],
+        run_groups={"first_two": [1, 2]},
+    )
+
+    assert (
+        out
+        / "contrasts"
+        / "sub-100307"
+        / "task-LANGUAGE"
+        / "run-first_two_math_gt_baseline_effect.nii.gz"
+    ).exists()
+
+    run_group_info = pd.read_csv(
+        out / "design" / "sub-100307_task-LANGUAGE_run-groups.csv"
+    )
+    custom_row = run_group_info[run_group_info["run_label"] == "first_two"]
+    assert custom_row.shape[0] == 1
+    assert custom_row.iloc[0]["group_type"] == "custom"
+    assert custom_row.iloc[0]["runs"] == "['01', '02']"
 
 def test_run_first_level_raises_on_invalid_regressor(tmp_path, monkeypatch):
     """

@@ -191,3 +191,59 @@ def test_effect_estimator_run_customized_runs_requires_both_labels(monkeypatch):
     est2 = effect_mod.EffectEstimator(subjects=["S1"], froi=froi, froi_run_label="all")
     with pytest.raises(ValueError, match="must both be specified"):
         est2.run(task="TASKX", effects=["eff1"], effect_run_label=None)
+
+
+def test_effect_estimator_run_customized_runs_uses_distinct_labels(monkeypatch):
+    froi = DummyFROI(parcels="dummy_parcels")
+    monkeypatch.setattr(effect_mod, "get_parcels", lambda parcels: (None, {1.0: "L1"}))
+    monkeypatch.setattr(
+        effect_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: np.array(
+            [5.0, 0.0], dtype=float
+        ),
+    )
+    monkeypatch.setattr(
+        effect_mod,
+        "_get_froi_data",
+        lambda subject, config, run_label: np.array([1.0, 0.0], dtype=float),
+    )
+    monkeypatch.setattr(effect_mod.EffectEstimator, "_save", lambda self, info: None)
+
+    est = effect_mod.EffectEstimator(
+        subjects=["S1"], froi=froi, froi_run_label="localizer_group"
+    )
+    summary, detail = est.run(
+        task="TASKX",
+        effects=["eff1"],
+        effect_run_label="effect_group",
+    )
+
+    assert set(detail["effect_run"]) == {"effect_group"}
+    assert set(detail["froi_run"]) == {"localizer_group"}
+    assert summary["size"].iloc[0] == pytest.approx(5.0)
+
+
+def test_effect_estimator_run_omits_froi_column_when_parcelless(monkeypatch):
+    froi = DummyFROI(parcels="none")
+    monkeypatch.setattr(effect_mod, "get_parcels", lambda parcels: (None, None))
+    monkeypatch.setattr(effect_mod, "_check_orthogonal", lambda *a, **k: True)
+    monkeypatch.setattr(
+        effect_mod,
+        "_get_froi_data",
+        lambda subject, config, run_label: np.array([1.0, 0.0], dtype=float),
+    )
+    monkeypatch.setattr(
+        effect_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: np.array(
+            [2.0, 0.0], dtype=float
+        ),
+    )
+    monkeypatch.setattr(effect_mod.EffectEstimator, "_save", lambda self, info: None)
+
+    est = effect_mod.EffectEstimator(subjects=["S1"], froi=froi)
+    summary, detail = est.run(task="TASKX", effects=["eff1"])
+
+    assert "froi" not in summary.columns
+    assert "froi" not in detail.columns

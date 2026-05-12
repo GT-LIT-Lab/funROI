@@ -161,3 +161,30 @@ def test_spcorr__run_basic_properties():
     assert list(detail.columns) == ["froi", "run", "fisher_z"]
     assert summary.shape[0] == 1
     assert np.isfinite(summary["fisher_z"].iloc[0])
+
+
+def test_spcorr_run_omits_froi_column_when_parcelless(monkeypatch):
+    monkeypatch.setattr(spcorr_mod, "FROIConfig", DummyFROI, raising=False)
+    monkeypatch.setattr(spcorr_mod, "get_parcels", lambda x: (None, None))
+    monkeypatch.setattr(spcorr_mod, "_check_orthogonal", lambda *a, **k: True)
+    monkeypatch.setattr(
+        spcorr_mod,
+        "_get_froi_data",
+        lambda subject, cfg, run_label: np.array([1.0, 0.0, 0.0, 0.0], dtype=float),
+    )
+    monkeypatch.setattr(
+        spcorr_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: np.array(
+            [1.0, 0.0, 0.0, 0.0], dtype=float
+        ),
+    )
+    monkeypatch.setattr(spcorr_mod.SpatialCorrelationEstimator, "_save", lambda self, info: None)
+
+    est = spcorr_mod.SpatialCorrelationEstimator(
+        subjects=["S1"], froi=DummyFROI(parcels="none")
+    )
+    summary, detail = est.run("T1", "e1", "T2", "e2")
+
+    assert "froi" not in summary.columns
+    assert "froi" not in detail.columns

@@ -244,3 +244,28 @@ def test_overlap_estimator_run_custom_runs(monkeypatch):
     assert ("S2", "02") in calls
     assert set(detail["run1"]) == {"01"}
     assert set(detail["run2"]) == {"02"}
+
+
+def test_overlap_estimator_omits_froi_columns_when_parcelless(monkeypatch):
+    est = overlap_mod.OverlapEstimator(kind="overlap")
+    monkeypatch.setattr(overlap_mod.OverlapEstimator, "_save", lambda self, info: None)
+    monkeypatch.setattr(overlap_mod, "FROIConfig", DummyFROI, raising=False)
+    monkeypatch.setattr(overlap_mod, "get_parcels", lambda p: (None, None))
+    monkeypatch.setattr(overlap_mod, "_check_orthogonal", lambda *a, **k: True)
+    monkeypatch.setattr(
+        overlap_mod,
+        "_get_froi_data",
+        lambda subject, cfg, run: np.array([1.0, 0.0, 0.0, 0.0], dtype=float),
+    )
+
+    summary, detail = est.run(
+        DummyFROI(parcels="none"),
+        DummyFROI(parcels="none"),
+        subject1="S1",
+        subject2="S1",
+    )
+
+    assert "froi1" not in summary.columns
+    assert "froi2" not in summary.columns
+    assert "froi1" not in detail.columns
+    assert "froi2" not in detail.columns

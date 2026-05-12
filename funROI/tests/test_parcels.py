@@ -238,3 +238,11 @@ def test_get_parcels_string_prefers_saved_and_falls_back_to_external(tmp_path):
     img2, labels2 = parcels_mod.get_parcels(str(ext_path))
     assert img2 is not None
     assert labels2 == {1: 1, 2: 2}
+
+
+def test_get_parcels_special_cases_none():
+    img, labels = parcels_mod.get_parcels("none")
+    assert img is None
+    assert labels is None
+    assert parcels_mod.is_no_parcels("none") is True
+    assert parcels_mod.is_no_parcels(parcels_mod.ParcelsConfig(None)) is True

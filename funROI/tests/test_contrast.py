@@ -85,13 +85,39 @@ def test_get_contrast_runs_by_group_variants(tmp_path):
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "odd") == ["01", "03"]
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "even") == ["02", "04"]
 
-    # Note: current implementation is buggy: run_label[5:] is a string, so "run not in run_label[5:]" is char-based.
-    # This test locks current behavior minimally by checking it returns a subset and doesn't crash.
-    out = contrast_mod._get_contrast_runs_by_group(subject, task, con, "orth01")
-    assert isinstance(out, list)
-    assert all(r in ["01", "02", "03", "04"] for r in out)
+    assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "orth01") == [
+        "02",
+        "03",
+        "04",
+    ]
 
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "03") == ["03"]
+
+
+def test_get_contrast_runs_by_group_uses_saved_custom_groups(tmp_path):
+    subject, task, con = "100307", "LANGUAGE", "c1"
+    for r in ["01", "02", "03", "04"]:
+        _nii(
+            contrast_mod._get_contrast_path(subject, task, r, con, "t"),
+            np.zeros((2, 2, 2)),
+        )
+
+    run_group_info_path = contrast_mod._get_run_group_info_path(subject, task)
+    run_group_info_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run_label": "first_half",
+                "runs": ["01", "02"],
+                "n_runs": 2,
+                "group_type": "custom",
+            }
+        ]
+    ).to_csv(run_group_info_path, index=False)
+
+    assert contrast_mod._get_contrast_runs_by_group(
+        subject, task, con, "first_half"
+    ) == ["01", "02"]
 
 
 # -----------------------

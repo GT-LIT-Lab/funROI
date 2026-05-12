@@ -5,6 +5,7 @@ funROI: A package for functional region of interest analysis in fMRI data.
 from . import analysis, datasets, first_level
 from .analysis import (
     EffectEstimator,
+    FunctionalConnectivityEstimator,
     FROIGenerator,
     LateralityIndexAnalyzer,
     OverlapEstimator,
@@ -47,6 +48,7 @@ __all__ = [
     "ParcelsGenerator",
     "FROIGenerator",
     "EffectEstimator",
+    "FunctionalConnectivityEstimator",
     "SpatialCorrelationEstimator",
     "OverlapEstimator",
     "LateralityIndexAnalyzer",

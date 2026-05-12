@@ -1,4 +1,4 @@
-from .parcels import get_parcels, ParcelsConfig
+from .parcels import get_parcels, ParcelsConfig, is_no_parcels
 from .utils import (
     validate_arguments,
     _get_orthogonalized_run_labels,
@@ -49,7 +49,7 @@ class FROIConfig(dict):
         contrasts: List[str],
         threshold_type: str,
         threshold_value: float,
-        parcels: Union[str, ParcelsConfig],
+        parcels: Union[str, ParcelsConfig, None],
         conjunction_type: Optional[str] = None,
     ):
         if threshold_value < 0:
@@ -61,7 +61,10 @@ class FROIConfig(dict):
         self.threshold_value = threshold_value
 
         if not isinstance(parcels, ParcelsConfig):
-            parcels = ParcelsConfig(parcels)
+            if is_no_parcels(parcels):
+                parcels = ParcelsConfig(None)
+            else:
+                parcels = ParcelsConfig(parcels)
         self.parcels = parcels
 
         dict.__init__(
@@ -114,8 +117,8 @@ def _build_froi_registry_record(config: FROIConfig) -> dict:
         "conjunction_type": config.conjunction_type,
         "threshold_type": config.threshold_type,
         "threshold_value": config.threshold_value,
-        "parcels": parcels.parcels_path,
-        "labels": parcels.labels_path,
+        "parcels": None if is_no_parcels(parcels) else parcels.parcels_path,
+        "labels": None if is_no_parcels(parcels) else parcels.labels_path,
     }
 
 

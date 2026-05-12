@@ -1,6 +1,6 @@
 from .settings import get_bids_deriv_folder
 from nilearn.image import load_img
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import ast
 import numpy as np
@@ -37,6 +37,10 @@ _get_dof_path_bids = lambda subject, task: (
 _get_design_matrix_path = lambda subject, task: (
     _get_model_folder(subject, task)
     / f"sub-{subject}_task-{task}_design-matrix.csv"
+)
+_get_run_group_info_path = lambda subject, task: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_run-groups.csv"
 )
 _get_residuals_path = lambda subject, task: (
     _get_model_folder(subject, task)
@@ -81,19 +85,41 @@ def _get_contrast_runs_by_group(
     subject: str, task: str, contrast: str, run_label: str
 ) -> List[str]:
     """
-    Search for all numerically labeled runs for a contrast.
+    Resolve a run label to its underlying numerically labeled runs.
     """
     runs = _get_contrast_runs(subject, task, contrast)
+    run_groups = _get_run_group_info(subject, task)
+    if run_label in run_groups:
+        return run_groups[run_label]
     if run_label == "all":
         return runs
     elif run_label == "odd":
         return [run for run in runs if int(run) % 2 == 1]
     elif run_label == "even":
         return [run for run in runs if int(run) % 2 == 0]
-    elif "orth" in run_label:
-        return [run for run in runs if run not in run_label[5:]]
+    elif run_label.startswith("orth"):
+        return [run for run in runs if run != run_label[4:]]
     else:
         return [run_label]
+
+
+def _get_run_group_info(subject: str, task: str) -> Dict[str, List[str]]:
+    """
+    Load saved run-group definitions from the model folder.
+    """
+    run_group_info_path = _get_run_group_info_path(subject, task)
+    if not run_group_info_path.exists():
+        return {}
+
+    run_group_info = pd.read_csv(run_group_info_path)
+    if run_group_info.empty:
+        return {}
+
+    run_group_info["runs"] = run_group_info["runs"].apply(ast.literal_eval)
+    return {
+        row["run_label"]: [str(run) for run in row["runs"]]
+        for row in run_group_info.to_dict(orient="records")
+    }
 
 
 @validate_arguments(

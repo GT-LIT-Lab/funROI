@@ -27,7 +27,7 @@ class ParcelsConfig(dict):
     @ensure_paths("parcels_path", "labels_path")
     def __init__(
         self,
-        parcels_path: Union[str, Path],
+        parcels_path: Optional[Union[str, Path]],
         labels_path: Optional[Union[str, Path]] = None,
     ):
         self.parcels_path = parcels_path
@@ -88,6 +88,9 @@ def get_parcels(
     """
     Get parcels image and labels.
     """
+    if is_no_parcels(parcels):
+        return None, None
+
     if isinstance(parcels, str):
         parcels_img, label_dict = _get_saved_parcels(parcels)
         if parcels_img is None:
@@ -98,6 +101,17 @@ def get_parcels(
         parcels_img, label_dict = _get_external_parcels(parcels)
 
     return parcels_img, label_dict
+
+
+def is_no_parcels(parcels: Optional[Union[str, ParcelsConfig]]) -> bool:
+    """
+    Return True when the configuration explicitly requests parcel-free fROIs.
+    """
+    if parcels is None:
+        return True
+    if isinstance(parcels, str):
+        return parcels.lower() == "none"
+    return parcels.parcels_path is None
 
 
 def _get_saved_parcels(parcels_label: str) -> Tuple[Nifti1Image, dict]:

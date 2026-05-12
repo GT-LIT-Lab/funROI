@@ -1,7 +1,7 @@
 from typing import List, Optional, Union, Tuple
 from ..utils import validate_arguments
 from ..contrast import _check_orthogonal
-from ..parcels import ParcelsConfig, get_parcels
+from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
 from ..froi import FROIConfig, _get_froi_data, _get_orthogonalized_froi_data
 import numpy as np
 import pandas as pd
@@ -76,6 +76,14 @@ class OverlapEstimator(AnalysisSaver):
         """
         self.froi1 = froi1
         self.froi2 = froi2
+        froi1_has_explicit_parcels = not (
+            isinstance(self.froi1, FROIConfig)
+            and is_no_parcels(self.froi1.parcels)
+        )
+        froi2_has_explicit_parcels = not (
+            isinstance(self.froi2, FROIConfig)
+            and is_no_parcels(self.froi2.parcels)
+        )
         froi1_img, froi1_labels = get_parcels(
             self.froi1.parcels
             if isinstance(self.froi1, FROIConfig)
@@ -211,6 +219,9 @@ class OverlapEstimator(AnalysisSaver):
             df_detail["froi1"] = df_detail["froi1"].apply(
                 lambda x: froi1_labels[x]
             )
+        elif not is_parcels1 and not froi1_has_explicit_parcels:
+            df_summary = df_summary.drop(columns=["froi1"])
+            df_detail = df_detail.drop(columns=["froi1"])
         if froi2_labels is not None:
             df_summary["froi2"] = df_summary["froi2"].apply(
                 lambda x: froi2_labels[x]
@@ -218,6 +229,9 @@ class OverlapEstimator(AnalysisSaver):
             df_detail["froi2"] = df_detail["froi2"].apply(
                 lambda x: froi2_labels[x]
             )
+        elif not is_parcels2 and not froi2_has_explicit_parcels:
+            df_summary = df_summary.drop(columns=["froi2"])
+            df_detail = df_detail.drop(columns=["froi2"])
         if is_parcels1:
             df_summary = df_summary.rename(columns={"froi1": "parcel1"})
             df_detail = df_detail.rename(columns={"froi1": "parcel1"})

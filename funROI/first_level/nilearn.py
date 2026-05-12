@@ -10,6 +10,7 @@ from ..contrast import (
     _get_contrast_path,
     _get_design_matrix_path,
     _get_contrast_folder,
+    _get_run_group_info_path,
     _get_residuals_path,
 )
 from nilearn.glm.first_level import (
@@ -41,6 +42,104 @@ def _compute_contrast(sub, task, run, model, contrast_name, contrast_vector):
         )
 
 
+def _validate_run_groups(
+    run_groups: Optional[Dict[str, List[int]]], n_runs: int
+) -> Dict[str, List[str]]:
+    if run_groups is None:
+        return {}
+
+    reserved_labels = {"all", "odd", "even"}
+    normalized_groups = {}
+    for label, run_ids in run_groups.items():
+        if label in reserved_labels or label.isdigit() or label.startswith("orth"):
+            raise ValueError(
+                f"Invalid custom run group name '{label}'. "
+                "Custom run groups cannot reuse built-in run labels."
+            )
+        if len(run_ids) == 0:
+            raise ValueError(
+                f"Custom run group '{label}' must include at least one run."
+            )
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError(
+                f"Custom run group '{label}' contains duplicate run ids."
+            )
+        if min(run_ids) < 1 or max(run_ids) > n_runs:
+            raise ValueError(
+                f"Custom run group '{label}' includes an invalid run id. "
+                f"Expected 1-indexed run ids between 1 and {n_runs}."
+            )
+        normalized_groups[label] = [f"{run_id:02d}" for run_id in run_ids]
+    return normalized_groups
+
+
+def _build_run_group_summary(
+    run_labels: List[str],
+    orthogs: Optional[List[str]],
+    custom_run_groups: Dict[str, List[str]],
+) -> pd.DataFrame:
+    records = [
+        {
+            "run_label": run_label,
+            "runs": [run_label],
+            "n_runs": 1,
+            "group_type": "single-run",
+        }
+        for run_label in run_labels
+    ]
+    records.append(
+        {
+            "run_label": "all",
+            "runs": run_labels,
+            "n_runs": len(run_labels),
+            "group_type": "builtin",
+        }
+    )
+
+    if len(run_labels) > 1 and orthogs is not None:
+        if "odd-even" in orthogs:
+            for group_label, rem in [("odd", 1), ("even", 0)]:
+                runs = [
+                    run_label
+                    for run_label in run_labels
+                    if int(run_label) % 2 == rem
+                ]
+                if len(runs) != 0:
+                    records.append(
+                        {
+                            "run_label": group_label,
+                            "runs": runs,
+                            "n_runs": len(runs),
+                            "group_type": "builtin",
+                        }
+                    )
+        if "all-but-one" in orthogs:
+            for run_label in run_labels:
+                records.append(
+                    {
+                        "run_label": f"orth{run_label}",
+                        "runs": [
+                            other_run
+                            for other_run in run_labels
+                            if other_run != run_label
+                        ],
+                        "n_runs": len(run_labels) - 1,
+                        "group_type": "builtin",
+                    }
+                )
+
+    for group_label, runs in custom_run_groups.items():
+        records.append(
+            {
+                "run_label": group_label,
+                "runs": runs,
+                "n_runs": len(runs),
+                "group_type": "custom",
+            }
+        )
+    return pd.DataFrame(records)
+
+
 def run_first_level(
     task: str,
     subjects: Optional[List[str]] = None,
@@ -48,6 +147,7 @@ def run_first_level(
     data_filter: Optional[List[Tuple[str, str]]] = [],
     contrasts: Optional[List[Tuple[str, Dict[str, float]]]] = [],
     orthogs: Optional[List[str]] = ["all-but-one", "odd-even"],
+    run_groups: Optional[Dict[str, List[int]]] = None,
     fd_threshold: Optional[float] = None,
     std_dvars_threshold: Optional[float] = None,
     **kwargs,
@@ -75,6 +175,10 @@ def run_first_level(
         contrast images are also generated for corresponding run labels.
         Supported strategies are 'all-but-one' and 'odd-even'. Default is both.
     :type orthogs: Optional[List[str]]
+    :param run_groups: Optional custom run groups to compute alongside the
+        built-in run labels. Keys are group names and values are 1-indexed run
+        ids.
+    :type run_groups: Optional[Dict[str, List[int]]]
     :param fd_threshold: Threshold for framewise displacement (FD) to be used
         for confound generation.
     :type fd_threshold: Optional[float]
@@ -204,6 +308,15 @@ def run_first_level(
         design_matrix_path.parent.mkdir(parents=True, exist_ok=True)
         design_matrix.to_csv(design_matrix_path, index=False)
 
+        run_labels = [f"{run_i:02d}" for run_i in range(1, len(run_imgs) + 1)]
+        custom_run_groups = _validate_run_groups(run_groups, len(run_imgs))
+        run_group_summary = _build_run_group_summary(
+            run_labels, orthogs, custom_run_groups
+        )
+        run_group_summary.to_csv(
+            _get_run_group_info_path(subject, task), index=False
+        )
+
         contrasts_ = contrasts.copy()
         for con_i, (contrast_name, contrast_expr) in enumerate(contrasts_):
             contrast_expr_by_run = {
@@ -259,6 +372,24 @@ def run_first_level(
                 contrast_name,
                 contrast_vector,
             )
+
+            for group_label, group_runs in custom_run_groups.items():
+                group_contrast_vector = [
+                    (
+                        v * len(run_imgs) / len(group_runs)
+                        if label.split("_")[0].replace("run-", "") in group_runs
+                        else 0
+                    )
+                    for label, v in zip(design_matrix.columns, contrast_vector)
+                ]
+                _compute_contrast(
+                    subject,
+                    task,
+                    group_label,
+                    model,
+                    contrast_name,
+                    group_contrast_vector,
+                )
 
             # Continue if only one run is available
             if len(run_imgs) == 1:

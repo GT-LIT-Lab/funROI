@@ -6,6 +6,7 @@ from ..contrast import (
     _check_orthogonal,
 )
 from ..parcels import get_parcels
+from ..parcels import is_no_parcels
 import pandas as pd
 from ..utils import validate_arguments
 import numpy as np
@@ -54,6 +55,7 @@ class EffectEstimator(AnalysisSaver):
 
         # Preload the parcel labels
         _, self.froi_labels = get_parcels(self.froi.parcels)
+        self._has_explicit_parcels = not is_no_parcels(self.froi.parcels)
 
     def run(
         self, task: str, effects: List[str], effect_run_label: Optional[str] = None
@@ -78,6 +80,7 @@ class EffectEstimator(AnalysisSaver):
         """
         self.task = task
         self.effects = effects
+        contrasts = np.array(self.effects)
 
         use_customized_runs = False
         if effect_run_label is not None or self.froi_run_label is not None:
@@ -106,7 +109,6 @@ class EffectEstimator(AnalysisSaver):
                     ]
                 )
                 okorth = np.all(okorths)
-                contrasts = np.array(self.effects)
 
                 froi_all = _get_froi_data(subject, self.froi, "all")
                 if froi_all is None:
@@ -143,6 +145,7 @@ class EffectEstimator(AnalysisSaver):
                             f"for the run label {self.froi_run_label}, skipping."
                         )
                         continue
+                    data_i_froi = data_i_froi[None, :]
                     effect_run_labels, froi_run_labels = [effect_run_label], [self.froi_run_label]
                 elif okorth:
                     data_i_effect = _get_contrast_data(
@@ -186,6 +189,9 @@ class EffectEstimator(AnalysisSaver):
                     df_detail["froi"] = df_detail["froi"].apply(
                         lambda x: self.froi_labels[x]
                     )
+                elif not self._has_explicit_parcels:
+                    df_summary = df_summary.drop(columns=["froi"])
+                    df_detail = df_detail.drop(columns=["froi"])
                 df_detail["effect_run"] = df_detail["run"].apply(
                     lambda x: effect_run_labels[x]
                 )
@@ -210,6 +216,8 @@ class EffectEstimator(AnalysisSaver):
                 "fill_na_with_zero": [self.fill_na_with_zero],
                 "orthogonalization": [self.orthogonalization],
                 "froi": [self.froi],
+                "customized_effect_run": [effect_run_label],
+                "customized_froi_run": [self.froi_run_label],
             }
         )
         self._save(new_effects_info)
