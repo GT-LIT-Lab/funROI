@@ -6,6 +6,7 @@ import json
 import shutil
 import pathlib
 from typing import List, Union
+from tqdm import tqdm
 
 
 def _get_events(ev_folder_path, events):
@@ -192,7 +193,7 @@ def fetch_data(
     data_dir.mkdir(parents=True, exist_ok=True)
     bids_dir.mkdir(parents=True, exist_ok=True)
     s3_client = boto3.client("s3")
-    for subject in subjects:
+    for subject in tqdm(subjects):
         try:
             _download_selected(data_dir, s3_client, subject, task)
             _convert_to_bids(data_dir / "HCP_1200", bids_dir, subject, task)
