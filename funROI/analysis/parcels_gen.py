@@ -41,7 +41,35 @@ class ParcelsGenerator:
         the data before parcel generation. If False, the smoothing is done
         using Nilearn's Gaussian smoothing. Default is True.
     :type use_spm_smooth: Optional[bool]
+    :param space: Optional analysis space. When set to a surface space such as
+        ``"fsLR32k"``, this constructor dispatches to
+        :class:`funROI.analysis.SurfaceParcelsGenerator` so surface and volume
+        parcel generation can share the same public entry point.
+    :type space: Optional[str]
     """
+
+    def __new__(
+        cls,
+        parcels_name: str,
+        smoothing_kernel_size: Optional[Union[float, List[float]]] = 8,
+        overlap_thr_vox: Optional[float] = 0.1,
+        min_voxel_size: Optional[int] = 0,
+        overlap_thr_roi: Optional[float] = 0,
+        use_spm_smooth: Optional[bool] = True,
+        space: Optional[str] = None,
+    ):
+        if cls is ParcelsGenerator and space is not None:
+            from .surface_parcels_gen import SurfaceParcelsGenerator
+
+            return SurfaceParcelsGenerator(
+                parcels_name=parcels_name,
+                space=space,
+                smoothing_kernel_size=smoothing_kernel_size,
+                overlap_thr_vox=overlap_thr_vox,
+                min_voxel_size=min_voxel_size,
+                overlap_thr_roi=overlap_thr_roi,
+            )
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -51,6 +79,7 @@ class ParcelsGenerator:
         min_voxel_size: Optional[int] = 0,
         overlap_thr_roi: Optional[float] = 0,
         use_spm_smooth: Optional[bool] = True,
+        space: Optional[str] = None,
     ):
         self.parcels_name = parcels_name
         self.smoothing_kernel_size = smoothing_kernel_size

@@ -8,6 +8,7 @@ import nibabel as nib
 
 import funROI
 import funROI.analysis.parcels_gen as parcels_gen_mod
+import funROI.analysis.surface_parcels_gen as surface_parcels_gen_mod
 from funROI.analysis.tests.utils import DummyFROIConfig
 
 
@@ -45,6 +46,14 @@ def test_add_subjects_rejects_redundant_subjects(monkeypatch, tmp_settings):
             p_threshold_value=0.05,
             conjunction_type="and",
         )
+
+
+def test_parcels_generator_dispatches_to_surface_generator():
+    gen = parcels_gen_mod.ParcelsGenerator("P", space="fsLR32k")
+
+    assert isinstance(gen, surface_parcels_gen_mod.SurfaceParcelsGenerator)
+    assert gen.parcels_name == "P"
+    assert gen.space == "fsLR32k"
 
 
 def test_add_subjects_sets_shape_affine_and_collects_data(monkeypatch, tmp_settings, tmp_path):
