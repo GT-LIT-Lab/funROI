@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import pytest
 from unittest.mock import Mock
@@ -20,13 +21,20 @@ def test_convert_to_bids_language_lr(tmp_path):
     data_dir = tmp_path / "HCP_1200"
     bids_dir = tmp_path / "bids"
 
-    run_folder = (
-        data_dir / subject / "MNINonLinear" / "Results" / "tfMRI_LANGUAGE_LR"
-    )
+    mninonlinear_dir = data_dir / subject / "MNINonLinear"
+    fsaverage_dir = mninonlinear_dir / "fsaverage_LR32k"
+    run_folder = mninonlinear_dir / "Results" / "tfMRI_LANGUAGE_LR"
     evs_dir = run_folder / "EVs"
     evs_dir.mkdir(parents=True, exist_ok=True)
     _write_dummy_file(run_folder / "brainmask_fs.2.nii.gz")
     _write_dummy_file(run_folder / "tfMRI_LANGUAGE_LR.nii.gz")
+    _write_dummy_file(run_folder / "tfMRI_LANGUAGE_LR_Atlas_MSMAll.dtseries.nii")
+    _write_dummy_file(
+        fsaverage_dir / f"{subject}.L.midthickness.32k_fs_LR.surf.gii"
+    )
+    _write_dummy_file(
+        fsaverage_dir / f"{subject}.R.midthickness.32k_fs_LR.surf.gii"
+    )
 
     run_folder.mkdir(parents=True, exist_ok=True)
     (run_folder / "Movement_Regressors.txt").write_text(
@@ -35,7 +43,18 @@ def test_convert_to_bids_language_lr(tmp_path):
     (evs_dir / "math.txt").write_text("0\t1\t1\n2\t1\t1\n")
     (evs_dir / "story.txt").write_text("1\t1\t1\n3\t1\t1\n")
 
-    hcp._convert_to_bids(data_dir=data_dir, bids_dir=bids_dir, subject=subject, task=task)
+    original_extract = hcp._extract_surface_data_from_dtseries
+    hcp._extract_surface_data_from_dtseries = lambda _: {
+        "L": np.ones((3, 4), dtype=np.float32),
+        "R": np.full((3, 4), 2.0, dtype=np.float32),
+    }
+
+    try:
+        hcp._convert_to_bids(
+            data_dir=data_dir, bids_dir=bids_dir, subject=subject, task=task
+        )
+    finally:
+        hcp._extract_surface_data_from_dtseries = original_extract
 
     bids_func = bids_dir / f"sub-{subject}" / "func"
     assert bids_func.exists()
@@ -66,6 +85,59 @@ def test_convert_to_bids_language_lr(tmp_path):
     assert list(df_ev.columns) == ["trial_type", "onset", "duration"]
     assert set(df_ev["trial_type"]) == {"math", "story"}
     assert df_ev["onset"].tolist() == sorted(df_ev["onset"].tolist())
+
+    bids_anat = bids_dir / f"sub-{subject}" / "anat"
+    assert (
+        bids_anat / f"sub-{subject}_hemi-L_space-fsLR32k_midthickness.surf.gii"
+    ).exists()
+    assert (
+        bids_anat / f"sub-{subject}_hemi-R_space-fsLR32k_midthickness.surf.gii"
+    ).exists()
+    for hemi in ["L", "R"]:
+        surface_bold = (
+            bids_func
+            / f"sub-{subject}_task-LANGUAGE_run-1_acq-LR_hemi-{hemi}_space-fsLR32k_desc-preproc_bold.func.gii"
+        )
+        surface_json = (
+            bids_func
+            / f"sub-{subject}_task-LANGUAGE_run-1_acq-LR_hemi-{hemi}_space-fsLR32k_desc-preproc_bold.json"
+        )
+        assert surface_bold.exists()
+        assert surface_json.exists()
+        meta = json.loads(surface_json.read_text())
+        assert meta["TaskName"] == task
+
+
+def test_convert_to_bids_can_skip_surface_files(tmp_path):
+    subject = "100307"
+    task = "LANGUAGE"
+    data_dir = tmp_path / "HCP_1200"
+    bids_dir = tmp_path / "bids"
+
+    run_folder = (
+        data_dir / subject / "MNINonLinear" / "Results" / "tfMRI_LANGUAGE_LR"
+    )
+    evs_dir = run_folder / "EVs"
+    evs_dir.mkdir(parents=True, exist_ok=True)
+    _write_dummy_file(run_folder / "brainmask_fs.2.nii.gz")
+    _write_dummy_file(run_folder / "tfMRI_LANGUAGE_LR.nii.gz")
+    (run_folder / "Movement_Regressors.txt").write_text(
+        " ".join(["0"] * 12) + "\n"
+    )
+    (evs_dir / "math.txt").write_text("0\t1\t1\n")
+    (evs_dir / "story.txt").write_text("1\t1\t1\n")
+
+    hcp._convert_to_bids(
+        data_dir=data_dir,
+        bids_dir=bids_dir,
+        subject=subject,
+        task=task,
+        download_surface_data=False,
+    )
+
+    bids_func = bids_dir / f"sub-{subject}" / "func"
+    assert not list(bids_func.glob("*func.gii"))
+    assert not (bids_dir / f"sub-{subject}" / "anat").exists()
 
 
 def test_fetch_data_rejects_unknown_task(tmp_path):
@@ -159,6 +231,7 @@ def test_download_selected_lists_both_patterns_and_downloads_all(monkeypatch, tm
         if prefix.endswith("tfMRI_LANGUAGE_LR"):
             return [
                 "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/a.nii.gz",
+                "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/tfMRI_LANGUAGE_LR_Atlas_MSMAll.dtseries.nii",
                 "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/b.txt",
             ]
         if prefix.endswith("tfMRI_LANGUAGE_RL"):
@@ -180,10 +253,41 @@ def test_download_selected_lists_both_patterns_and_downloads_all(monkeypatch, tm
     task = "LANGUAGE"
 
     hcp._download_selected(tmp_path, s3_client, subject, task)
-    assert len(calls) == 3
+    assert len(calls) == 6
     for bucket_name, s3_key, local_path in calls:
         assert bucket_name == "hcp-openaccess"
         assert local_path == tmp_path / s3_key
+
+
+def test_download_selected_can_skip_surface_files(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        hcp,
+        "_list_s3_objects",
+        lambda *args, **kwargs: [
+            "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/vol.nii.gz",
+            "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/tfMRI_LANGUAGE_LR_Atlas_MSMAll.dtseries.nii",
+        ],
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        hcp,
+        "_download_file",
+        lambda s3_client, bucket_name, s3_key, local_path: calls.append(s3_key),
+    )
+
+    hcp._download_selected(
+        tmp_path,
+        Mock(),
+        "100307",
+        "LANGUAGE",
+        download_surface_data=False,
+    )
+
+    assert calls == [
+        "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/vol.nii.gz",
+        "HCP_1200/100307/MNINonLinear/Results/tfMRI_LANGUAGE_LR/vol.nii.gz",
+    ]
 
 
 def test_fetch_data_happy_path(tmp_path: Path, monkeypatch):
@@ -220,11 +324,39 @@ def test_fetch_data_happy_path(tmp_path: Path, monkeypatch):
         assert args[1] is fake_s3
         assert args[2] == subj
         assert args[3] == task
+        assert kwargs["download_surface_data"] is True
         args, kwargs = convert_to_bids_mock.call_args_list[i]
         assert args[0] == data_dir / "HCP_1200"
         assert args[1] == data_dir / "bids"
         assert args[2] == subj
         assert args[3] == task
+        assert kwargs["download_surface_data"] is True
+
+
+def test_fetch_data_propagates_surface_toggle(tmp_path: Path, monkeypatch):
+    fake_s3 = Mock(name="fake_s3")
+    monkeypatch.setattr(hcp.boto3, "client", Mock(return_value=fake_s3))
+    download_selected_mock = Mock()
+    convert_to_bids_mock = Mock()
+    monkeypatch.setattr(hcp, "_download_selected", download_selected_mock)
+    monkeypatch.setattr(hcp, "_convert_to_bids", convert_to_bids_mock)
+    monkeypatch.setattr(hcp.shutil, "rmtree", Mock())
+
+    hcp.fetch_data(
+        data_dir=tmp_path / "data",
+        task="LANGUAGE",
+        subjects=["100307"],
+        download_surface_data=False,
+    )
+
+    assert (
+        download_selected_mock.call_args.kwargs["download_surface_data"]
+        is False
+    )
+    assert (
+        convert_to_bids_mock.call_args.kwargs["download_surface_data"]
+        is False
+    )
 
 
 def test_fetch_data_catches_subject_error_and_continues(tmp_path, monkeypatch, capsys):
@@ -284,4 +416,3 @@ def test_convert_to_bids_event_branches(tmp_path, task, expected_events):
     )
     df = pd.read_csv(events_tsv, sep="\t")
     assert set(df["trial_type"]) == expected_events
-

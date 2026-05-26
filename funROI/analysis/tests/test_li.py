@@ -1,12 +1,36 @@
 import numpy as np
 import pandas as pd
 import nibabel as nib
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI.analysis.li as li_mod
 
 
 def _make_img_with_affine(data: np.ndarray, affine: np.ndarray) -> nib.Nifti1Image:
     return nib.Nifti1Image(np.asarray(data, dtype=np.float32), affine)
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_li_run_counts_left_right_and_li():
@@ -48,6 +72,16 @@ def test_li_run_nan_when_no_nonzero_voxels():
     assert n_left == 0
     assert n_right == 0
     assert np.isnan(li)
+
+
+def test_li_run_surface_counts_vertices():
+    img = _surface_img([1, 0, 1], [1, 0, 0])
+
+    n_left, n_right, li = li_mod.LateralityIndexAnalyzer._run(img)
+
+    assert n_left == 2
+    assert n_right == 1
+    assert li == (2 - 1) / 3
 
 
 def test_analyzer_run_skips_missing_subjects_and_saves_when_requested(monkeypatch):

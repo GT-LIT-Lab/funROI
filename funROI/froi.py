@@ -1,21 +1,41 @@
-from .parcels import get_parcels, ParcelsConfig, is_no_parcels
-from .utils import (
-    validate_arguments,
-    _get_orthogonalized_run_labels,
-)
+from pathlib import Path
+import re
+from typing import List, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from nilearn.image import load_img, new_img_like
+from statsmodels.stats.multitest import fdrcorrection
+
 from ._registry import get_or_create_record_id
-from .settings import get_bids_deriv_folder
+from ._surface import (
+    SURFACE_HEMIS,
+    flatten_image_data,
+    is_surface_image,
+    load_surface_image,
+    save_surface_image,
+    surface_image_from_flat,
+)
 from .contrast import (
     _get_contrast_data,
-    _get_contrast_runs,
     _get_contrast_path,
+    _get_contrast_runs,
+    _get_surface_contrast_path,
 )
-from pathlib import Path
-from typing import Optional, List, Union, Tuple
-import numpy as np
-from nilearn.image import load_img, new_img_like
-import pandas as pd
-from statsmodels.stats.multitest import fdrcorrection
+from .first_level.nilearn import _find_surface_mesh_paths
+from .parcels import (
+    ParcelsConfig,
+    SurfaceParcelsConfig,
+    get_parcels,
+    is_no_parcels,
+)
+from .settings import (
+    get_bids_data_folder,
+    get_bids_deriv_folder,
+    get_bids_preprocessed_folder,
+    get_bids_preprocessed_folder_relative,
+)
+from .utils import _get_orthogonalized_run_labels, validate_arguments
 
 
 class FROIConfig(dict):
@@ -33,7 +53,7 @@ class FROIConfig(dict):
     :type threshold_value: float
     :param parcels: The parcels configuration. If a string is provided, it is
         assumed to be the path to the parcels file.
-    :type parcels: Union[str, ParcelsConfig]
+    :type parcels: Union[str, ParcelsConfig, SurfaceParcelsConfig]
     :param conjunction_type: The conjunction type if multiple contrasts are
         provided. Options are 'min', 'max', 'sum', 'prod', 'and', 'or', or None.
     :type conjunction_type: str, optional
@@ -49,7 +69,9 @@ class FROIConfig(dict):
         contrasts: List[str],
         threshold_type: str,
         threshold_value: float,
-        parcels: Union[str, ParcelsConfig, None],
+        parcels: Union[
+            str, ParcelsConfig, SurfaceParcelsConfig, None
+        ],
         conjunction_type: Optional[str] = None,
     ):
         if threshold_value < 0:
@@ -60,7 +82,7 @@ class FROIConfig(dict):
         self.threshold_type = threshold_type
         self.threshold_value = threshold_value
 
-        if not isinstance(parcels, ParcelsConfig):
+        if not isinstance(parcels, (ParcelsConfig, SurfaceParcelsConfig)):
             if is_no_parcels(parcels):
                 parcels = ParcelsConfig(None)
             else:
@@ -107,19 +129,59 @@ _get_froi_info_path = lambda subject, task: (
 )
 
 
-def _build_froi_registry_record(config: FROIConfig) -> dict:
-    parcels = config.parcels
-    if not isinstance(parcels, ParcelsConfig):
+def _serialize_parcels_reference(parcels):
+    if not isinstance(parcels, (ParcelsConfig, SurfaceParcelsConfig)):
         parcels = ParcelsConfig(parcels)
 
+    if is_no_parcels(parcels):
+        return None, None
+    if isinstance(parcels, SurfaceParcelsConfig):
+        return {
+            "kind": "surface",
+            "parcels_paths": parcels.parcels_paths,
+            "mesh_paths": parcels.mesh_paths,
+            "space": parcels.space,
+        }, parcels.labels_path
+    return parcels.parcels_path, parcels.labels_path
+
+
+def _build_froi_registry_record(config: FROIConfig) -> dict:
+    parcels_value, labels_value = _serialize_parcels_reference(config.parcels)
     return {
         "contrasts": str(sorted(config.contrasts)),
         "conjunction_type": config.conjunction_type,
         "threshold_type": config.threshold_type,
         "threshold_value": config.threshold_value,
-        "parcels": None if is_no_parcels(parcels) else parcels.parcels_path,
-        "labels": None if is_no_parcels(parcels) else parcels.labels_path,
+        "parcels": parcels_value,
+        "labels": labels_value,
     }
+
+
+def _get_froi_record_id(
+    subject: str, config: FROIConfig, create: bool = False
+) -> int:
+    return get_or_create_record_id(
+        _get_froi_info_path(subject, config.task),
+        _build_froi_registry_record(config),
+        create=create,
+    )
+
+
+def _get_froi_stem(
+    subject: str,
+    run_label: str,
+    config: FROIConfig,
+    create: Optional[bool] = False,
+) -> Path:
+    record_id = _get_froi_record_id(subject, config, create=create)
+    record_label = f"{int(record_id):04d}"
+    return (
+        _get_subject_froi_folder(subject, config.task)
+        / (
+            f"sub-{subject}_task-{config.task}_run-{run_label}"
+            f"_froi-{record_label}"
+        )
+    )
 
 
 def _get_froi_path(
@@ -128,17 +190,79 @@ def _get_froi_path(
     config: FROIConfig,
     create: Optional[bool] = False,
 ) -> Path:
-    task = config.task
-    record_id = get_or_create_record_id(
-        _get_froi_info_path(subject, task),
-        _build_froi_registry_record(config),
-        create=create,
+    stem = _get_froi_stem(subject, run_label, config, create=create)
+    return stem.with_name(f"{stem.name}_mask.nii.gz")
+
+
+def _get_surface_froi_paths(
+    subject: str,
+    run_label: str,
+    config: FROIConfig,
+    create: Optional[bool] = False,
+) -> dict:
+    stem = _get_froi_stem(subject, run_label, config, create=create)
+    return {
+        hemi: stem.with_name(f"{stem.name}_hemi-{hemi}_mask.func.gii")
+        for hemi in SURFACE_HEMIS
+    }
+
+
+def _get_derivatives_root() -> Path:
+    try:
+        bids_data_folder = Path(get_bids_data_folder())
+        derivatives_folder = get_bids_preprocessed_folder_relative()
+        if derivatives_folder == ".":
+            return bids_data_folder
+        return bids_data_folder / derivatives_folder
+    except (ValueError, RuntimeError):
+        return Path(get_bids_preprocessed_folder())
+
+
+def _infer_surface_mesh_paths(subject: str) -> dict:
+    derivatives_root = _get_derivatives_root()
+    anat_dir = derivatives_root / f"sub-{subject}" / "anat"
+    if not anat_dir.exists():
+        raise FileNotFoundError(
+            f"No anatomical directory found for subject {subject}."
+        )
+
+    space_matches = []
+    for path in anat_dir.glob(f"sub-{subject}_hemi-L_*.surf.gii"):
+        match = re.search(r"_space-([^_]+)_", path.name)
+        if match is not None:
+            space_matches.append(match.group(1))
+    for space in sorted(set(space_matches)):
+        mesh_paths = _find_surface_mesh_paths(derivatives_root, subject, space)
+        if mesh_paths is not None:
+            return mesh_paths
+    raise FileNotFoundError(
+        f"Could not infer surface meshes for subject {subject}."
     )
-    id = f"{int(record_id):04d}"
-    return (
-        _get_subject_froi_folder(subject, task)
-        / f"sub-{subject}_task-{task}_run-{run_label}_froi-{id}_mask.nii.gz"
-    )
+
+
+def _get_surface_mesh_paths_for_froi(subject: str, config: FROIConfig) -> dict:
+    if isinstance(config.parcels, SurfaceParcelsConfig):
+        return config.parcels.mesh_paths
+    return _infer_surface_mesh_paths(subject)
+
+
+def _load_surface_contrast_image(
+    subject: str,
+    task: str,
+    run_label: str,
+    contrast: str,
+    image_type: str,
+    mesh_paths: dict,
+):
+    data_paths = {
+        hemi: _get_surface_contrast_path(
+            subject, task, run_label, contrast, image_type, hemi
+        )
+        for hemi in SURFACE_HEMIS
+    }
+    if not all(path.exists() for path in data_paths.values()):
+        return None
+    return load_surface_image(data_paths, mesh_paths)
 
 
 def _get_froi_runs(subject: str, config: FROIConfig):
@@ -198,18 +322,23 @@ def _get_froi_data(
     :rtype: np.ndarray
     """
     froi_path = _get_froi_path(subject, run_label, config)
-    if not froi_path.exists():
-        data = _create_froi(
-            subject, config, run_label, return_nifti=return_nifti
-        )
-        if data is None:
-            return None
-        return data
+    if froi_path.exists():
+        if return_nifti:
+            return load_img(froi_path)
+        return load_img(froi_path).get_fdata().flatten()
 
-    if return_nifti:
-        return load_img(froi_path)
+    surface_paths = _get_surface_froi_paths(subject, run_label, config)
+    if all(path.exists() for path in surface_paths.values()):
+        mesh_paths = _get_surface_mesh_paths_for_froi(subject, config)
+        img = load_surface_image(surface_paths, mesh_paths)
+        if return_nifti:
+            return img
+        return flatten_image_data(img)
 
-    return load_img(froi_path).get_fdata().flatten()
+    data = _create_froi(subject, config, run_label, return_nifti=return_nifti)
+    if data is None:
+        return None
+    return data
 
 
 def _create_froi(
@@ -241,12 +370,37 @@ def _create_froi(
             contrast_pth = _get_contrast_path(
                 subject, config.task, run_label, contrast, "p"
             )
-            parcels_ref = load_img(contrast_pth)
+            if contrast_pth.exists():
+                parcels_ref = load_img(contrast_pth)
+            else:
+                mesh_paths = _get_surface_mesh_paths_for_froi(subject, config)
+                parcels_ref = _load_surface_contrast_image(
+                    subject,
+                    config.task,
+                    run_label,
+                    contrast,
+                    "p",
+                    mesh_paths,
+                )
+                if parcels_ref is None:
+                    return None
         data.append(data_i[None, ...])
     data = np.array(data)
 
-    if parcels_ref is None:  # real parcels in use
-        froi_mask = np.zeros_like(parcels_img.get_fdata().flatten())
+    reference_img = parcels_img if parcels_img is not None else parcels_ref
+    if reference_img is None:
+        return None
+
+    if parcels_img is None:
+        froi_mask = _create_p_map_mask(
+            data,
+            config.conjunction_type,
+            config.threshold_type,
+            config.threshold_value,
+        ).squeeze()
+    else:
+        parcel_data = flatten_image_data(parcels_img)
+        froi_mask = np.zeros_like(parcel_data)
         for label in parcel_labels.keys():
             froi_mask_i = (
                 _create_p_map_mask(
@@ -254,24 +408,29 @@ def _create_froi(
                     config.conjunction_type,
                     config.threshold_type,
                     config.threshold_value,
-                    parcels_img.get_fdata().flatten() == label,
+                    parcel_data == label,
                 )
                 .squeeze()
                 .astype(bool)
             )
             froi_mask[froi_mask_i] = label
-    else:
-        froi_mask = _create_p_map_mask(
-            data,
-            config.conjunction_type,
-            config.threshold_type,
-            config.threshold_value,
+
+    if is_surface_image(reference_img):
+        froi_img = surface_image_from_flat(froi_mask, reference_img)
+        froi_paths = _get_surface_froi_paths(
+            subject, run_label, config, create=True
         )
-        parcels_img = parcels_ref
+        next(iter(froi_paths.values())).parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        save_surface_image(froi_img, froi_paths)
+        if return_nifti:
+            return froi_img
+        return flatten_image_data(froi_img)
 
     froi_path = _get_froi_path(subject, run_label, config, create=True)
     froi_path.parent.mkdir(parents=True, exist_ok=True)
-    froi_img = new_img_like(parcels_img, froi_mask.reshape(parcels_img.shape))
+    froi_img = new_img_like(reference_img, froi_mask.reshape(reference_img.shape))
     froi_img.to_filename(froi_path)
 
     if return_nifti:
@@ -309,7 +468,6 @@ def _threshold_p_map(
         threshold = pvals_sorted[threshold_value - 1]
         froi_mask[data <= threshold] = 1
 
-    # All-tie-inclusive thresholding
     elif "percent" in threshold_type:
         pvals_sorted = np.sort(data, axis=0)
         n = np.floor(

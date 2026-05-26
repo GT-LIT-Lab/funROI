@@ -1,4 +1,5 @@
 from .parcels_gen import ParcelsGenerator
+from .surface_parcels_gen import SurfaceParcelsGenerator
 from .froi_gen import FROIGenerator
 from .effect import EffectEstimator
 from .fconn import FunctionalConnectivityEstimator
@@ -8,6 +9,7 @@ from .li import LateralityIndexAnalyzer
 
 __all__ = [
     "ParcelsGenerator",
+    "SurfaceParcelsGenerator",
     "FROIGenerator",
     "EffectEstimator",
     "FunctionalConnectivityEstimator",

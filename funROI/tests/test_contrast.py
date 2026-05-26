@@ -1,4 +1,5 @@
 from pathlib import Path
+import nibabel as nib
 import numpy as np
 import pandas as pd
 import pytest
@@ -20,6 +21,20 @@ def _nii(path: Path, data: np.ndarray):
     path.parent.mkdir(parents=True, exist_ok=True)
     img = Nifti1Image(np.asarray(data, dtype=np.float32), np.eye(4))
     img.to_filename(path)
+    return path
+
+
+def _gii(path: Path, data: np.ndarray):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim == 1:
+        arrays = [data]
+    else:
+        arrays = [data[:, i] for i in range(data.shape[1])]
+    img = nib.gifti.GiftiImage(
+        darrays=[nib.gifti.GiftiDataArray(data=array) for array in arrays]
+    )
+    nib.save(img, path)
     return path
 
 
@@ -138,6 +153,25 @@ def test_get_contrast_data_p_converts_zero_to_nan(tmp_path):
     assert dat.shape == (2,)
     assert np.isnan(dat[0])
     assert dat[1] == pytest.approx(0.01)
+
+
+def test_get_contrast_data_reads_surface_gifti_pair(tmp_path):
+    subject, task, run, con = "100307", "LANGUAGE", "01", "c1"
+    _gii(
+        contrast_mod._get_surface_contrast_path(
+            subject, task, run, con, "t", "L"
+        ),
+        np.array([1.0, 2.0, 3.0]),
+    )
+    _gii(
+        contrast_mod._get_surface_contrast_path(
+            subject, task, run, con, "t", "R"
+        ),
+        np.array([4.0, 5.0]),
+    )
+
+    dat = contrast_mod._get_contrast_data(subject, task, run, con, "t")
+    assert dat.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
 
 
 def test_get_orthogonalized_contrast_data_happy(tmp_path, monkeypatch):

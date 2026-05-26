@@ -6,9 +6,18 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from nilearn import glm, image, maskers
+from nilearn import glm, image, maskers, signal
 from nilearn.image import load_img
+from nilearn.surface import SurfaceImage
 
+from .._surface import (
+    SURFACE_HEMIS,
+    SURFACE_PARTS,
+    flatten_image_data,
+    is_surface_image,
+    load_surface_image,
+)
+from ..first_level.nilearn import _find_surface_mesh_paths, _smooth_surface_array
 from ..froi import FROIConfig, _get_froi_data
 from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
 from ..settings import get_bids_data_folder, get_bids_preprocessed_folder
@@ -41,25 +50,38 @@ SPACE_RE = re.compile(r"_space-([A-Za-z0-9]+)_")
 SES_RE = re.compile(r"_ses-([A-Za-z0-9]+)_")
 
 
+def _normalize_standardize_arg(standardize):
+    if standardize is True:
+        return "zscore_sample"
+    if standardize is False:
+        return None
+    return standardize
+
+
 class FunctionalConnectivityEstimator(AnalysisSaver):
     """
-    Estimate functional connectivity from cleaned preprocessed BOLD runs.
+    Estimate within-subject functional connectivity from cleaned
+    preprocessed BOLD runs.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        subjects: List[str],
+        froi1: Union[FROIConfig, str, ParcelsConfig],
+        froi2: Union[FROIConfig, str, ParcelsConfig],
+    ):
+        self.subjects = subjects
+        self.froi1 = froi1
+        self.froi2 = froi2
         self._type = "fconn"
         self._data_summary = None
         self._data_detail = None
 
     def run(
         self,
-        froi1: Union[FROIConfig, str, ParcelsConfig],
-        froi2: Union[FROIConfig, str, ParcelsConfig],
-        subject1: Optional[str] = None,
-        subject2: Optional[str] = None,
         task: Optional[str] = None,
-        run1: Optional[str] = None,
-        run2: Optional[str] = None,
+        froi1_run_label: Optional[str] = None,
+        froi2_run_label: Optional[str] = None,
         session: Optional[str] = None,
         space: Optional[str] = None,
         clean_surf: bool = False,
@@ -70,7 +92,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         fd_threshold: Optional[float] = 0.5,
         volume_fwhm: Optional[float] = 4,
         surface_fwhm: Optional[float] = 4,
-        standardize: bool = True,
+        standardize: Union[bool, str, None] = True,
         detrend: bool = True,
         regress_out_task: bool = True,
         low_pass: Optional[float] = 0.1,
@@ -78,15 +100,12 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         min_T: int = 50,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Run the functional connectivity analysis.
+        Run the functional connectivity analysis for all subjects.
         """
-        self.froi1 = froi1
-        self.froi2 = froi2
-        self.run1 = run1
-        self.run2 = run2
+        self.froi1_run_label = froi1_run_label
+        self.froi2_run_label = froi2_run_label
 
-        subject = self._resolve_subject(subject1, subject2)
-        task = self._resolve_task(task, froi1, froi2)
+        task = self._resolve_task(task, self.froi1, self.froi2)
         clean_config = {
             "clean_surf": clean_surf,
             "mask_suffix": mask_suffix,
@@ -96,7 +115,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             "fd_threshold": fd_threshold,
             "volume_fwhm": volume_fwhm,
             "surface_fwhm": surface_fwhm,
-            "standardize": standardize,
+            "standardize": _normalize_standardize_arg(standardize),
             "detrend": detrend,
             "regress_out_task": regress_out_task,
             "low_pass": low_pass,
@@ -104,57 +123,83 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             "min_T": min_T,
         }
 
-        froi1_labels, froi1_name, froi1_has_explicit_parcels, froi1_img = (
-            self._resolve_mask_data(froi1, subject, run1)
-        )
-        froi2_labels, froi2_name, froi2_has_explicit_parcels, froi2_img = (
-            self._resolve_mask_data(froi2, subject, run2)
-        )
-
-        cleaned_imgs, cleaned_run_labels = self._get_cleaned_imgs_by_run(
-            subject, task, session, space, clean_config
-        )
-        df_summary, df_detail = self._run(cleaned_imgs, froi1_img, froi2_img)
-
-        df_detail["bold_run"] = df_detail["run"].apply(
-            lambda idx: cleaned_run_labels[idx]
-        )
-        df_detail = df_detail.drop(columns=["run"])
-
-        if froi1_labels is not None:
-            df_summary["froi1"] = df_summary["froi1"].apply(
-                lambda x: froi1_labels[x]
+        data_summary = []
+        data_detail = []
+        for subject in self.subjects:
+            froi1_labels, froi1_name, froi1_has_explicit_parcels, froi1_img = (
+                self._resolve_mask_data(self.froi1, subject, froi1_run_label)
             )
-            df_detail["froi1"] = df_detail["froi1"].apply(
-                lambda x: froi1_labels[x]
+            froi2_labels, froi2_name, froi2_has_explicit_parcels, froi2_img = (
+                self._resolve_mask_data(self.froi2, subject, froi2_run_label)
             )
-        elif not froi1_has_explicit_parcels:
-            df_summary = df_summary.drop(columns=["froi1"])
-            df_detail = df_detail.drop(columns=["froi1"])
 
-        if froi2_labels is not None:
-            df_summary["froi2"] = df_summary["froi2"].apply(
-                lambda x: froi2_labels[x]
+            subject_clean_config = dict(clean_config)
+            subject_clean_config["clean_surf"] = (
+                subject_clean_config["clean_surf"]
+                or is_surface_image(froi1_img)
+                or is_surface_image(froi2_img)
             )
-            df_detail["froi2"] = df_detail["froi2"].apply(
-                lambda x: froi2_labels[x]
+            if subject_clean_config["clean_surf"] and not (
+                is_surface_image(froi1_img) and is_surface_image(froi2_img)
+            ):
+                raise ValueError(
+                    "Surface functional connectivity requires both ROI inputs to "
+                    "be surface-based."
+                )
+
+            (
+                cleaned_imgs,
+                cleaned_run_labels,
+                cleaned_session_labels,
+            ) = self._get_cleaned_imgs_by_run(
+                subject, task, session, space, subject_clean_config
             )
-        elif not froi2_has_explicit_parcels:
-            df_summary = df_summary.drop(columns=["froi2"])
-            df_detail = df_detail.drop(columns=["froi2"])
+            df_summary, df_detail = self._run(cleaned_imgs, froi1_img, froi2_img)
 
-        if froi1_name == "parcel":
-            df_summary = df_summary.rename(columns={"froi1": "parcel1"})
-            df_detail = df_detail.rename(columns={"froi1": "parcel1"})
-        if froi2_name == "parcel":
-            df_summary = df_summary.rename(columns={"froi2": "parcel2"})
-            df_detail = df_detail.rename(columns={"froi2": "parcel2"})
+            df_detail["bold_run"] = df_detail["run"].apply(
+                lambda idx: cleaned_run_labels[idx]
+            )
+            df_detail["bold_session"] = df_detail["run"].apply(
+                lambda idx: cleaned_session_labels[idx]
+            )
+            df_detail = df_detail.drop(columns=["run"])
 
-        df_summary["subject"] = subject
-        df_detail["subject"] = subject
+            if froi1_labels is not None:
+                df_summary["froi1"] = df_summary["froi1"].apply(
+                    lambda x: froi1_labels[x]
+                )
+                df_detail["froi1"] = df_detail["froi1"].apply(
+                    lambda x: froi1_labels[x]
+                )
+            elif not froi1_has_explicit_parcels:
+                df_summary = df_summary.drop(columns=["froi1"])
+                df_detail = df_detail.drop(columns=["froi1"])
 
-        self._data_summary = df_summary
-        self._data_detail = df_detail
+            if froi2_labels is not None:
+                df_summary["froi2"] = df_summary["froi2"].apply(
+                    lambda x: froi2_labels[x]
+                )
+                df_detail["froi2"] = df_detail["froi2"].apply(
+                    lambda x: froi2_labels[x]
+                )
+            elif not froi2_has_explicit_parcels:
+                df_summary = df_summary.drop(columns=["froi2"])
+                df_detail = df_detail.drop(columns=["froi2"])
+
+            if froi1_name == "parcel":
+                df_summary = df_summary.rename(columns={"froi1": "parcel1"})
+                df_detail = df_detail.rename(columns={"froi1": "parcel1"})
+            if froi2_name == "parcel":
+                df_summary = df_summary.rename(columns={"froi2": "parcel2"})
+                df_detail = df_detail.rename(columns={"froi2": "parcel2"})
+
+            df_summary["subject"] = subject
+            df_detail["subject"] = subject
+            data_summary.append(df_summary)
+            data_detail.append(df_detail)
+
+        self._data_summary = pd.concat(data_summary, ignore_index=True)
+        self._data_detail = pd.concat(data_detail, ignore_index=True)
         new_info = pd.DataFrame(
             {
                 "task": [task],
@@ -162,31 +207,13 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 "space": [space],
                 "froi1": [self.froi1],
                 "froi2": [self.froi2],
-                "customized_run1": [run1],
-                "customized_run2": [run2],
+                "customized_froi1_run": [froi1_run_label],
+                "customized_froi2_run": [froi2_run_label],
                 "clean_config": [clean_config],
             }
         )
         self._save(new_info)
         return self._data_summary, self._data_detail
-
-    @staticmethod
-    def _resolve_subject(
-        subject1: Optional[str], subject2: Optional[str]
-    ) -> str:
-        if subject1 is None and subject2 is None:
-            raise ValueError(
-                "A subject label is required for functional connectivity."
-            )
-        if subject1 is None:
-            subject1 = subject2
-        if subject2 is None:
-            subject2 = subject1
-        if subject1 != subject2:
-            raise ValueError(
-                "Functional connectivity must be computed within a single subject."
-            )
-        return subject1
 
     @staticmethod
     def _resolve_task(
@@ -242,29 +269,51 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         session: Optional[str],
         space: Optional[str],
         config: Dict,
-    ) -> Tuple[List, List[str]]:
+    ) -> Tuple[List, List[str], List[Optional[str]]]:
         if config["clean_surf"]:
-            raise NotImplementedError(
-                "Surface-based functional connectivity cleaning is not implemented."
+            run_records = (
+                FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
+                    subject, task, session, space
+                )
             )
+            cleaned_imgs = []
+            cleaned_run_labels = []
+            cleaned_session_labels = []
+            for record in run_records:
+                cleaned_img = FunctionalConnectivityEstimator._clean_surface_run(
+                    record, config
+                )
+                if cleaned_img is None:
+                    continue
+                cleaned_imgs.append(cleaned_img)
+                cleaned_run_labels.append(record["run_label"])
+                cleaned_session_labels.append(record["session_label"])
+
+            if len(cleaned_imgs) == 0:
+                raise ValueError(
+                    f"No usable preprocessed runs found for subject {subject} and task {task}."
+                )
+            return cleaned_imgs, cleaned_run_labels, cleaned_session_labels
 
         run_records = FunctionalConnectivityEstimator._find_preprocessed_runs(
             subject, task, session, space, config["mask_suffix"]
         )
         cleaned_imgs = []
         cleaned_run_labels = []
+        cleaned_session_labels = []
         for record in run_records:
             cleaned_img = FunctionalConnectivityEstimator._clean_run(record, config)
             if cleaned_img is None:
                 continue
             cleaned_imgs.append(cleaned_img)
             cleaned_run_labels.append(record["run_label"])
+            cleaned_session_labels.append(record["session_label"])
 
         if len(cleaned_imgs) == 0:
             raise ValueError(
                 f"No usable preprocessed runs found for subject {subject} and task {task}."
             )
-        return cleaned_imgs, cleaned_run_labels
+        return cleaned_imgs, cleaned_run_labels, cleaned_session_labels
 
     @staticmethod
     def _find_preprocessed_runs(
@@ -282,23 +331,21 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             pass
 
         subject_dir = preproc_root / f"sub-{subject}"
-        if session is not None:
-            func_dir = subject_dir / f"ses-{session}" / "func"
-        else:
-            session_dirs = sorted(subject_dir.glob("ses-*"))
-            if len(session_dirs) > 1:
-                raise ValueError(
-                    "Multiple sessions were found. Please specify `session`."
-                )
-            if len(session_dirs) == 1:
-                func_dir = session_dirs[0] / "func"
-            else:
-                func_dir = subject_dir / "func"
+        func_dirs = FunctionalConnectivityEstimator._get_subject_func_dirs(
+            subject_dir, session
+        )
 
-        if not func_dir.exists():
-            raise ValueError(f"Functional directory not found: {func_dir}")
-
-        func_files = sorted(func_dir.glob(f"*task-{task}_*desc-preproc_bold.nii.gz"))
+        func_files = []
+        missing_dirs = []
+        for func_dir, _ in func_dirs:
+            if not func_dir.exists():
+                missing_dirs.append(func_dir)
+                continue
+            func_files.extend(
+                sorted(func_dir.glob(f"*task-{task}_*desc-preproc_bold.nii.gz"))
+            )
+        if len(func_files) == 0 and len(missing_dirs) == len(func_dirs):
+            raise ValueError(f"Functional directory not found: {missing_dirs[0]}")
         if len(func_files) == 0:
             raise ValueError(
                 f"No preprocessed BOLD runs found for subject {subject} and task {task}."
@@ -356,16 +403,30 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             anat_dir = FunctionalConnectivityEstimator._find_anat_dir(
                 preproc_root, subject, file_session
             )
-            mask_file = FunctionalConnectivityEstimator._find_mask_file(
-                anat_dir, subject, file_session, file_space, mask_suffix
+            mask_file, used_functional_mask = (
+                FunctionalConnectivityEstimator._find_mask_file(
+                    anat_dir,
+                    func_file,
+                    subject,
+                    file_session,
+                    file_space,
+                    mask_suffix,
+                )
             )
             if mask_file is None:
                 warnings.warn(
                     f"No matching mask found for {func_file.name}, skipping."
                 )
                 continue
+            if used_functional_mask:
+                warnings.warn(
+                    f"Anatomical mask not found for {func_file.name}; using "
+                    f"functional mask {mask_file.name} instead."
+                )
 
-            sidecar_path = Path(str(func_file).replace(".nii.gz", ".json"))
+            sidecar_path = FunctionalConnectivityEstimator._find_bold_sidecar(
+                func_file
+            )
             if not sidecar_path.exists():
                 warnings.warn(
                     f"JSON sidecar not found for {func_file.name}, skipping."
@@ -390,10 +451,184 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "StartTime": sidecar.get("StartTime", 0),
                     "sidecar": sidecar,
                     "run_label": run_label,
+                    "session_label": file_session,
                 }
             )
 
         return run_records
+
+    @staticmethod
+    def _find_preprocessed_surface_runs(
+        subject: str,
+        task: str,
+        session: Optional[str],
+        space: Optional[str],
+    ) -> List[Dict]:
+        preproc_root = get_bids_preprocessed_folder()
+        bids_root = None
+        try:
+            bids_root = get_bids_data_folder()
+        except RuntimeError:
+            pass
+
+        subject_dir = preproc_root / f"sub-{subject}"
+        func_dirs = FunctionalConnectivityEstimator._get_subject_func_dirs(
+            subject_dir, session
+        )
+
+        func_files = []
+        missing_dirs = []
+        for func_dir, _ in func_dirs:
+            if not func_dir.exists():
+                missing_dirs.append(func_dir)
+                continue
+            func_files.extend(
+                sorted(
+                    func_dir.glob(
+                        f"*task-{task}_*hemi-L*_desc-preproc_bold.func.gii"
+                    )
+                )
+            )
+        if len(func_files) == 0 and len(missing_dirs) == len(func_dirs):
+            raise ValueError(f"Functional directory not found: {missing_dirs[0]}")
+        if len(func_files) == 0:
+            raise ValueError(
+                f"No surface preprocessed BOLD runs found for subject {subject} and task {task}."
+            )
+
+        spaces_found = sorted(
+            {
+                match.group(1)
+                for path in func_files
+                for match in [SPACE_RE.search(path.name)]
+                if match is not None
+            }
+        )
+        if space is None and len(spaces_found) > 1:
+            raise ValueError(
+                "Multiple spaces were found for the requested task. Please specify `space`."
+            )
+
+        run_records = []
+        for left_file in func_files:
+            file_space_match = SPACE_RE.search(left_file.name)
+            file_space = (
+                file_space_match.group(1)
+                if file_space_match is not None
+                else None
+            )
+            if file_space is None:
+                warnings.warn(
+                    f"Space entity missing for {left_file.name}, skipping."
+                )
+                continue
+            if space is not None and file_space != space:
+                continue
+
+            right_file = Path(str(left_file).replace("_hemi-L_", "_hemi-R_"))
+            if not right_file.exists():
+                warnings.warn(
+                    f"Right hemisphere file not found for {left_file.name}, skipping."
+                )
+                continue
+
+            session_match = SES_RE.search(left_file.name)
+            file_session = (
+                session_match.group(1)
+                if session_match is not None
+                else None
+            )
+            run_match = RUN_RE.search(left_file.name)
+            run_label = run_match.group(1) if run_match is not None else "01"
+            prefix = re.sub(
+                r"_hemi-L(?:_space-[A-Za-z0-9]+)?_desc-preproc_bold\.func\.gii$",
+                "",
+                left_file.name,
+            )
+
+            confounds_file = (
+                left_file.parent / f"{prefix}_desc-confounds_timeseries.tsv"
+            )
+            if not confounds_file.exists():
+                warnings.warn(
+                    f"Confounds file not found for {left_file.name}, skipping."
+                )
+                continue
+
+            if bids_root is None:
+                events_file = None
+            else:
+                if file_session is None:
+                    events_dir = bids_root / f"sub-{subject}" / "func"
+                else:
+                    events_dir = (
+                        bids_root
+                        / f"sub-{subject}"
+                        / f"ses-{file_session}"
+                        / "func"
+                    )
+                candidate = events_dir / f"{prefix}_events.tsv"
+                events_file = candidate if candidate.exists() else None
+
+            mesh_paths = _find_surface_mesh_paths(
+                preproc_root, subject, file_space
+            )
+            if mesh_paths is None:
+                warnings.warn(
+                    f"No matching surface meshes found for {left_file.name}, skipping."
+                )
+                continue
+
+            sidecar_path = Path(str(left_file).replace(".func.gii", ".json"))
+            if not sidecar_path.exists():
+                warnings.warn(
+                    f"JSON sidecar not found for {left_file.name}, skipping."
+                )
+                continue
+            with open(sidecar_path, "r") as f:
+                sidecar = json.load(f)
+            TR = sidecar.get("RepetitionTime")
+            if TR is None:
+                warnings.warn(
+                    f"RepetitionTime missing for {left_file.name}, skipping."
+                )
+                continue
+
+            run_records.append(
+                {
+                    "func_files": {"L": left_file, "R": right_file},
+                    "mesh_paths": mesh_paths,
+                    "confounds_file": confounds_file,
+                    "events_file": events_file,
+                    "TR": TR,
+                    "StartTime": sidecar.get("StartTime", 0),
+                    "sidecar": sidecar,
+                    "run_label": run_label,
+                    "session_label": file_session,
+                }
+            )
+
+        return run_records
+
+    @staticmethod
+    def _get_subject_func_dirs(
+        subject_dir: Path, session: Optional[str]
+    ) -> List[Tuple[Path, Optional[str]]]:
+        if session is not None:
+            return [(subject_dir / f"ses-{session}" / "func", session)]
+
+        func_dirs = []
+        root_func_dir = subject_dir / "func"
+        if root_func_dir.exists():
+            func_dirs.append((root_func_dir, None))
+
+        for session_dir in sorted(subject_dir.glob("ses-*")):
+            session_label = session_dir.name.replace("ses-", "", 1)
+            func_dirs.append((session_dir / "func", session_label))
+
+        if len(func_dirs) == 0:
+            func_dirs.append((root_func_dir, None))
+        return func_dirs
 
     @staticmethod
     def _find_anat_dir(
@@ -413,11 +648,12 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
     @staticmethod
     def _find_mask_file(
         anat_dir: Path,
+        func_file: Path,
         subject: str,
         session: Optional[str],
         space: Optional[str],
         mask_suffix: str,
-    ) -> Optional[Path]:
+    ) -> Tuple[Optional[Path], bool]:
         ses_str = f"_ses-{session}" if session is not None else ""
         patterns = []
         if space in {None, "T1w"}:
@@ -429,8 +665,29 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         for pattern in patterns:
             matches = sorted(anat_dir.glob(pattern))
             if len(matches) != 0:
-                return matches[0]
-        return None
+                return matches[0], False
+
+        func_mask_name = func_file.name.replace(
+            "_desc-preproc_bold.nii.gz", mask_suffix
+        )
+        func_mask_file = func_file.parent / func_mask_name
+        if func_mask_file.exists():
+            return func_mask_file, True
+
+        return None, False
+
+    @staticmethod
+    def _find_bold_sidecar(func_file: Path) -> Path:
+        exact_match = func_file.parent / func_file.name.replace(".nii.gz", ".json")
+        if exact_match.exists():
+            return exact_match
+
+        prefix = func_file.name.replace("_desc-preproc_bold.nii.gz", "")
+        candidates = sorted(func_file.parent.glob(f"{prefix}*_bold.json"))
+        if len(candidates) != 0:
+            return candidates[0]
+
+        return exact_match
 
     @staticmethod
     def _clean_run(record: Dict, config: Dict):
@@ -506,8 +763,90 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             low_pass=config["low_pass"],
             high_pass=config["high_pass"],
         )
-        cleaned_data = masker.fit_transform(func_img, confounds=confounds)
+        masker.fit()
+        cleaned_data = masker.transform(func_img, confounds=confounds)
         return masker.inverse_transform(cleaned_data)
+
+    @staticmethod
+    def _clean_surface_run(record: Dict, config: Dict):
+        confounds_raw = pd.read_csv(record["confounds_file"], sep="\t")
+        confounds = confounds_raw.filter(regex=config["confounds_regex"])
+
+        extra_confounds = []
+        if (
+            "framewise_displacement" in confounds_raw.columns
+            and config["fd_threshold"] is not None
+        ):
+            fd_values = confounds_raw["framewise_displacement"].fillna(0)
+            for idx, is_outlier in enumerate(fd_values > config["fd_threshold"]):
+                if is_outlier:
+                    outlier = np.zeros(len(confounds_raw))
+                    outlier[idx] = 1
+                    extra_confounds.append(
+                        pd.DataFrame({f"fd_outlier_{idx:04d}": outlier})
+                    )
+
+        if (
+            config["regress_out_task"]
+            and record["events_file"] is not None
+            and Path(record["events_file"]).exists()
+        ):
+            extra_confounds.extend(
+                FunctionalConnectivityEstimator._build_task_regressors(
+                    record["events_file"],
+                    record["sidecar"],
+                    record["TR"],
+                    record["StartTime"],
+                    len(confounds_raw),
+                )
+            )
+
+        all_confounds = [confounds] + extra_confounds
+        confounds = pd.concat(all_confounds, axis=1).fillna(0)
+        confounds_arg = confounds if confounds.shape[1] != 0 else None
+
+        func_img = load_surface_image(record["func_files"], record["mesh_paths"])
+        cleaned_parts = {}
+        n_timepoints = None
+        for hemi in SURFACE_HEMIS:
+            part_name = SURFACE_PARTS[hemi]
+            hemi_data = np.asarray(
+                func_img.data.parts[part_name], dtype=np.float32
+            )
+            if hemi_data.ndim == 1:
+                hemi_data = hemi_data[:, None]
+            if n_timepoints is None:
+                n_timepoints = hemi_data.shape[-1]
+            elif hemi_data.shape[-1] != n_timepoints:
+                raise ValueError(
+                    "Surface hemispheres must share the same number of timepoints."
+                )
+            if n_timepoints < config["min_T"]:
+                warnings.warn(
+                    "Skipping surface run: insufficient timepoints."
+                )
+                return None
+
+            hemi_data = _smooth_surface_array(
+                hemi_data,
+                func_img.mesh.parts[part_name],
+                config["surface_fwhm"],
+            )
+            cleaned = signal.clean(
+                hemi_data.T,
+                confounds=confounds_arg,
+                detrend=config["detrend"],
+                standardize=config["standardize"],
+                low_pass=config["low_pass"],
+                high_pass=config["high_pass"],
+                t_r=record["TR"],
+            )
+            cleaned_parts[part_name] = cleaned.T.astype(np.float32)
+
+        return SurfaceImage(
+            mesh=func_img.mesh,
+            data=cleaned_parts,
+        )
 
     @staticmethod
     def _build_task_regressors(
@@ -564,32 +903,63 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         detail_rows = []
         resampled_masks = {}
         for run_idx, cleaned_img in enumerate(cleaned_imgs):
-            cleaned_data = cleaned_img.get_fdata()
-            if cleaned_data.ndim != 4:
-                raise ValueError("Cleaned functional image must be 4D.")
-            time_series = cleaned_data.reshape((-1, cleaned_data.shape[-1])).T
+            if is_surface_image(cleaned_img):
+                if not (
+                    is_surface_image(froi1_img) and is_surface_image(froi2_img)
+                ):
+                    raise ValueError(
+                        "Surface connectivity requires surface ROI masks."
+                    )
+                time_series = np.concatenate(
+                    [
+                        np.asarray(
+                            cleaned_img.data.parts[SURFACE_PARTS[hemi]]
+                        )
+                        for hemi in SURFACE_HEMIS
+                    ],
+                    axis=0,
+                ).T
+                froi1_masks = flatten_image_data(froi1_img)
+                froi2_masks = flatten_image_data(froi2_img)
+                if (
+                    time_series.shape[1] != froi1_masks.size
+                    or time_series.shape[1] != froi2_masks.size
+                ):
+                    raise ValueError(
+                        "Surface ROI masks must match the cleaned data vertex count."
+                    )
+            else:
+                cleaned_data = cleaned_img.get_fdata()
+                if cleaned_data.ndim != 4:
+                    raise ValueError("Cleaned functional image must be 4D.")
+                time_series = cleaned_data.reshape(
+                    (-1, cleaned_data.shape[-1])
+                ).T
 
-            cache_key = (
-                cleaned_img.shape[:3],
-                tuple(cleaned_img.affine.flatten()),
-            )
-            if cache_key not in resampled_masks:
-                froi1_resampled = image.resample_to_img(
-                    froi1_img,
-                    image.index_img(cleaned_img, 0),
-                    interpolation="nearest",
-                    copy_header=True,
-                    force_resample=True,
-                ).get_fdata().flatten()
-                froi2_resampled = image.resample_to_img(
-                    froi2_img,
-                    image.index_img(cleaned_img, 0),
-                    interpolation="nearest",
-                    copy_header=True,
-                    force_resample=True,
-                ).get_fdata().flatten()
-                resampled_masks[cache_key] = (froi1_resampled, froi2_resampled)
-            froi1_masks, froi2_masks = resampled_masks[cache_key]
+                cache_key = (
+                    cleaned_img.shape[:3],
+                    tuple(cleaned_img.affine.flatten()),
+                )
+                if cache_key not in resampled_masks:
+                    froi1_resampled = image.resample_to_img(
+                        froi1_img,
+                        image.index_img(cleaned_img, 0),
+                        interpolation="nearest",
+                        copy_header=True,
+                        force_resample=True,
+                    ).get_fdata().flatten()
+                    froi2_resampled = image.resample_to_img(
+                        froi2_img,
+                        image.index_img(cleaned_img, 0),
+                        interpolation="nearest",
+                        copy_header=True,
+                        force_resample=True,
+                    ).get_fdata().flatten()
+                    resampled_masks[cache_key] = (
+                        froi1_resampled,
+                        froi2_resampled,
+                    )
+                froi1_masks, froi2_masks = resampled_masks[cache_key]
 
             froi1_labels = np.unique(froi1_masks)
             froi1_labels = froi1_labels[

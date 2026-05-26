@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from nibabel.nifti1 import Nifti1Image
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI.analysis.overlap as overlap_mod
 from funROI.analysis.tests.utils import DummyFROI
@@ -10,6 +11,29 @@ def _img_from_flat(flat: np.ndarray) -> Nifti1Image:
     # make it a small 3D image; flatten order doesn't matter because code flattens
     data = np.asarray(flat, dtype=np.float32).reshape((1, 1, -1))
     return Nifti1Image(data, np.eye(4))
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_overlap_run_validates_shapes():
@@ -85,6 +109,30 @@ def test_overlap_estimator_run_parcels_vs_parcels(monkeypatch):
     assert "run2" not in detail.columns
 
     # check mapping applied
+    assert set(summary["parcel1"]) == {"A"}
+    assert set(summary["parcel2"]) == {"B"}
+
+
+def test_overlap_estimator_run_surface_parcels_vs_parcels(monkeypatch):
+    est = overlap_mod.OverlapEstimator(kind="overlap")
+    monkeypatch.setattr(overlap_mod.OverlapEstimator, "_save", lambda self, info: None)
+
+    parcels1 = _surface_img([1, 1, 0], [0, 0, 0])
+    parcels2 = _surface_img([0, 2, 2], [0, 0, 0])
+
+    def fake_get_parcels(arg):
+        if arg == "P1":
+            return parcels1, {1: "A"}
+        if arg == "P2":
+            return parcels2, {2: "B"}
+        raise AssertionError("unexpected parcels key")
+
+    monkeypatch.setattr(overlap_mod, "get_parcels", fake_get_parcels)
+
+    summary, detail = est.run("P1", "P2")
+
+    assert "parcel1" in summary.columns and "parcel2" in summary.columns
+    assert "parcel1" in detail.columns and "parcel2" in detail.columns
     assert set(summary["parcel1"]) == {"A"}
     assert set(summary["parcel2"]) == {"B"}
 

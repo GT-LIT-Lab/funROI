@@ -1,10 +1,20 @@
 from typing import List, Optional, Union, Tuple
 from .._registry import get_or_create_record_id
+from .._surface import (
+    SURFACE_HEMIS,
+    flatten_image_data,
+    is_surface_image,
+    load_surface_image,
+    save_surface_image,
+    surface_image_from_flat,
+)
 from ..froi import (
     FROIConfig,
     _build_froi_registry_record,
     _create_froi,
     _get_froi_path,
+    _get_surface_froi_paths,
+    _get_surface_mesh_paths_for_froi,
 )
 from ..parcels import get_parcels
 from ..settings import get_analysis_output_folder
@@ -47,7 +57,7 @@ class FROIGenerator:
 
     def run(
         self, save: Optional[bool] = True
-    ) -> Optional[List[Tuple[str, Nifti1Image]]]:
+    ) -> Optional[List[Tuple[str, object]]]:
         """
         Run the fROI generation. The results are stored in the analysis output
         folder.
@@ -60,22 +70,22 @@ class FROIGenerator:
         """
         data = []
         for subject in self.subjects:
-            froi_pth = _get_froi_path(subject, self.run_label, self.froi)
-            if not froi_pth.exists():
-                _create_froi(subject, self.froi, self.run_label)
-                if not froi_pth.exists():
-                    warnings.warn(
-                        f"Error generating fROI for subject {subject}"
-                    )
-                    continue
-
-            froi_img = load_img(froi_pth)
+            froi_img = self._load_subject_froi(subject)
+            if froi_img is None:
+                warnings.warn(f"Error generating fROI for subject {subject}")
+                continue
 
             if save:
-                froi_pth = self._get_analysis_froi_path(
-                    subject, self.run_label, self.froi, create=True
-                )
-                froi_img.to_filename(froi_pth)
+                if is_surface_image(froi_img):
+                    froi_paths = self._get_analysis_surface_froi_paths(
+                        subject, self.run_label, self.froi, create=True
+                    )
+                    save_surface_image(froi_img, froi_paths)
+                else:
+                    froi_pth = self._get_analysis_froi_path(
+                        subject, self.run_label, self.froi, create=True
+                    )
+                    froi_img.to_filename(froi_pth)
 
             data.append((subject, froi_img))
 
@@ -88,7 +98,7 @@ class FROIGenerator:
         self,
         froi_label: Union[int, str],
         return_results: Optional[bool] = False,
-    ) -> Optional[List[Tuple[str, Nifti1Image]]]:
+    ) -> Optional[List[Tuple[str, object]]]:
         """
         Select a specific fROI label on the maps. The selected fROI label is
         kept, while all other labels are set to zero. The results are stored in
@@ -118,23 +128,65 @@ class FROIGenerator:
 
         results = []
         for subject, img in zip(self.subjects, self._data):
-            img_data = img.get_fdata()
-            img_data[img_data != label_numeric] = 0
-            img = Nifti1Image(img_data, img.affine)
+            if is_surface_image(img):
+                img_data = flatten_image_data(img)
+                img_data[img_data != label_numeric] = 0
+                img = surface_image_from_flat(img_data, img)
+            else:
+                img_data = img.get_fdata()
+                img_data[img_data != label_numeric] = 0
+                img = Nifti1Image(img_data, img.affine)
             results.append((subject, img))
 
-            # Save the the output directory
-            froi_pth = self._get_analysis_froi_path(
-                subject,
-                self.run_label,
-                self.froi,
-                create=True,
-                froi_label=label_str,
-            )
-            img.to_filename(froi_pth)
+            if is_surface_image(img):
+                froi_paths = self._get_analysis_surface_froi_paths(
+                    subject,
+                    self.run_label,
+                    self.froi,
+                    create=True,
+                    froi_label=label_str,
+                )
+                save_surface_image(img, froi_paths)
+            else:
+                froi_pth = self._get_analysis_froi_path(
+                    subject,
+                    self.run_label,
+                    self.froi,
+                    create=True,
+                    froi_label=label_str,
+                )
+                img.to_filename(froi_pth)
 
         if return_results:
             return results
+
+    def _load_subject_froi(self, subject: str):
+        froi_path = _get_froi_path(subject, self.run_label, self.froi)
+        if froi_path.exists():
+            return load_img(froi_path)
+
+        try:
+            surface_paths = _get_surface_froi_paths(
+                subject, self.run_label, self.froi
+            )
+        except RuntimeError:
+            surface_paths = None
+        if surface_paths is not None and all(
+            path.exists() for path in surface_paths.values()
+        ):
+            mesh_paths = _get_surface_mesh_paths_for_froi(subject, self.froi)
+            return load_surface_image(surface_paths, mesh_paths)
+
+        _create_froi(subject, self.froi, self.run_label)
+
+        if froi_path.exists():
+            return load_img(froi_path)
+        if surface_paths is not None and all(
+            path.exists() for path in surface_paths.values()
+        ):
+            mesh_paths = _get_surface_mesh_paths_for_froi(subject, self.froi)
+            return load_surface_image(surface_paths, mesh_paths)
+        return None
 
     @staticmethod
     def _get_analysis_froi_folder(task: str) -> Path:
@@ -170,3 +222,32 @@ class FROIGenerator:
                 froi_folder
                 / f"sub-{subject}_run-{run_label}_label-{froi_label}.nii.gz"
             )
+
+    @classmethod
+    def _get_analysis_surface_froi_paths(
+        cls,
+        subject: str,
+        run_label: str,
+        config: FROIConfig,
+        create: Optional[bool] = False,
+        froi_label: Optional[str] = None,
+    ) -> dict:
+        task = config.task
+        record_id = get_or_create_record_id(
+            cls._get_analysis_froi_info_path(task),
+            _build_froi_registry_record(config),
+            create=create,
+        )
+        record_label = f"{int(record_id):04d}"
+        froi_folder = cls._get_analysis_froi_folder(task) / f"froi_{record_label}"
+        froi_folder.mkdir(parents=True, exist_ok=True)
+
+        stem = f"sub-{subject}_run-{run_label}"
+        if froi_label is None:
+            stem = f"{stem}_froi"
+        else:
+            stem = f"{stem}_label-{froi_label}"
+        return {
+            hemi: froi_folder / f"{stem}_hemi-{hemi}.func.gii"
+            for hemi in SURFACE_HEMIS
+        }

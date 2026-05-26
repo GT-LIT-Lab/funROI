@@ -1,12 +1,16 @@
 from pathlib import Path
+import json
+import nibabel as nib
 import numpy as np
 import pandas as pd
 import pytest
 from nibabel.nifti1 import Nifti1Image
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI
+from funROI._surface import flatten_image_data, save_surface_image
 import funROI.froi as froi_mod
-from funROI.parcels import ParcelsConfig
+from funROI.parcels import ParcelsConfig, SurfaceParcelsConfig
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +26,46 @@ def _nii(path: Path, data: np.ndarray):
     img = Nifti1Image(np.asarray(data, dtype=np.float32), np.eye(4))
     img.to_filename(path)
     return path
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _write_surface_mesh(path: Path, mesh: InMemoryMesh):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = nib.gifti.GiftiImage(
+        darrays=[
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.coordinates, dtype=np.float32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_POINTSET"],
+            ),
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.faces, dtype=np.int32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_TRIANGLE"],
+            ),
+        ]
+    )
+    nib.save(img, path)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_get_froi_path_creates_and_reuses_and_increments_id(tmp_path):
@@ -578,3 +622,60 @@ def test_create_p_map_mask_conjunction_or_and_explicit_mask():
     )
     expected = np.array([[True, False, True], [True, False, False]])
     assert np.array_equal(mask, expected)
+
+
+def test_create_and_load_surface_froi_roundtrip(tmp_path, monkeypatch):
+    subject = "100307"
+    task = "LANGUAGE"
+    run = "01"
+
+    mesh_paths = {
+        "L": tmp_path / "L.surf.gii",
+        "R": tmp_path / "R.surf.gii",
+    }
+    _write_surface_mesh(mesh_paths["L"], _surface_mesh())
+    _write_surface_mesh(mesh_paths["R"], _surface_mesh(2.0))
+
+    parcels_img = _surface_img([1, 1, 0], [0, 2, 2])
+    parcels_paths = {
+        "L": tmp_path / "parcels_L.func.gii",
+        "R": tmp_path / "parcels_R.func.gii",
+    }
+    save_surface_image(parcels_img, parcels_paths)
+    labels_path = tmp_path / "parcels.json"
+    labels_path.write_text(json.dumps({1: "A", 2: "B"}))
+
+    cfg = froi_mod.FROIConfig(
+        task=task,
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=SurfaceParcelsConfig(
+            parcels_paths=parcels_paths,
+            mesh_paths=mesh_paths,
+            labels_path=labels_path,
+            space="fsLR32k",
+        ),
+        conjunction_type=None,
+    )
+
+    pvals = np.array([0.001, 0.002, 0.5, 0.5, 0.003, 0.004], dtype=float)
+    monkeypatch.setattr(
+        froi_mod,
+        "_get_contrast_data",
+        lambda sub, task_, run_, con, suf: pvals if suf == "p" else None,
+    )
+
+    created = froi_mod._create_froi(subject, cfg, run, return_nifti=True)
+    loaded = froi_mod._get_froi_data(subject, cfg, run, return_nifti=True)
+
+    assert isinstance(created, SurfaceImage)
+    assert isinstance(loaded, SurfaceImage)
+    assert froi_mod._build_froi_registry_record(cfg)["parcels"]["kind"] == "surface"
+    assert np.array_equal(
+        flatten_image_data(loaded),
+        np.array([1, 1, 0, 0, 2, 2], dtype=np.float32),
+    )
+
+    froi_paths = froi_mod._get_surface_froi_paths(subject, run, cfg)
+    assert all(path.exists() for path in froi_paths.values())

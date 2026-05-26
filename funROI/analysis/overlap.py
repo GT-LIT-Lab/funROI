@@ -1,4 +1,5 @@
 from typing import List, Optional, Union, Tuple
+from .._surface import flatten_image_data
 from ..utils import validate_arguments
 from ..contrast import _check_orthogonal
 from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
@@ -101,7 +102,7 @@ class OverlapEstimator(AnalysisSaver):
         if is_parcels1:
             if froi1_img is None:
                 raise ValueError("Parcels image 1 not found")
-            froi1_data = froi1_img.get_fdata().flatten()[None, :]
+            froi1_data = flatten_image_data(froi1_img)[None, :]
         else:
             if subject1 is None:
                 raise ValueError("Subject label 1 is required for fROIs")
@@ -109,7 +110,7 @@ class OverlapEstimator(AnalysisSaver):
         if is_parcels2:
             if froi2_img is None:
                 raise ValueError("Parcels image 2 not found")
-            froi2_data = froi2_img.get_fdata().flatten()[None, :]
+            froi2_data = flatten_image_data(froi2_img)[None, :]
         else:
             if subject2 is None:
                 raise ValueError("Subject label 2 is required for fROIs")

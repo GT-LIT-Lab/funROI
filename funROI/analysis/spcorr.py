@@ -1,4 +1,5 @@
 from typing import List, Optional, Union, Tuple
+from .._surface import flatten_image_data
 from ..contrast import (
     _check_orthogonal,
     _get_contrast_data,
@@ -162,7 +163,7 @@ class SpatialCorrelationEstimator(AnalysisSaver):
             )
 
             if is_parcels:
-                froi_data = self.parcels_img.get_fdata().flatten()[None, :]
+                froi_data = flatten_image_data(self.parcels_img)[None, :]
                 froi_run_labels = ["parcels"]
             elif run_froi is not None:
                 froi_data = _get_froi_data(subject, self.froi, run_froi)[

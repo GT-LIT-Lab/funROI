@@ -10,10 +10,11 @@ from .analysis import (
     LateralityIndexAnalyzer,
     OverlapEstimator,
     ParcelsGenerator,
+    SurfaceParcelsGenerator,
     SpatialCorrelationEstimator,
 )
 from .froi import FROIConfig
-from .parcels import ParcelsConfig
+from .parcels import ParcelsConfig, SurfaceParcelsConfig
 from .settings import (
     Settings,
     get_analysis_output_folder,
@@ -44,8 +45,10 @@ __all__ = [
     "get_analysis_output_folder",
     "reset_settings",
     "ParcelsConfig",
+    "SurfaceParcelsConfig",
     "FROIConfig",
     "ParcelsGenerator",
+    "SurfaceParcelsGenerator",
     "FROIGenerator",
     "EffectEstimator",
     "FunctionalConnectivityEstimator",

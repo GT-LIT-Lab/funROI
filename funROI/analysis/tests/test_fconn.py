@@ -1,7 +1,12 @@
+import json
+import warnings
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 from nibabel.nifti1 import Nifti1Image
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI.analysis.fconn as fconn_mod
 from funROI.analysis.tests.utils import DummyFROI
@@ -15,6 +20,29 @@ def _img_from_flat(flat: np.ndarray) -> Nifti1Image:
 def _bold_img(time_by_voxel: np.ndarray) -> Nifti1Image:
     data = np.asarray(time_by_voxel, dtype=np.float32).T.reshape((1, 1, -1, time_by_voxel.shape[0]))
     return Nifti1Image(data, np.eye(4))
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_fconn_run_basic_properties():
@@ -43,14 +71,24 @@ def test_fconn_run_basic_properties():
 
 
 def test_fconn_run_requires_single_subject():
-    est = fconn_mod.FunctionalConnectivityEstimator()
+    est = fconn_mod.FunctionalConnectivityEstimator(["S1", "S2"], "P1", "P2")
+    assert est.subjects == ["S1", "S2"]
 
-    with pytest.raises(ValueError, match="within a single subject"):
-        est.run("P1", "P2", subject1="S1", subject2="S2", task="TASK")
+
+def test_normalize_standardize_arg_matches_nilearn_015_values():
+    assert fconn_mod._normalize_standardize_arg(True) == "zscore_sample"
+    assert fconn_mod._normalize_standardize_arg(False) is None
+    assert (
+        fconn_mod._normalize_standardize_arg("zscore")
+        == "zscore"
+    )
+    assert fconn_mod._normalize_standardize_arg(None) is None
 
 
 def test_fconn_run_parcels_and_froi(monkeypatch):
-    est = fconn_mod.FunctionalConnectivityEstimator()
+    est = fconn_mod.FunctionalConnectivityEstimator(
+        ["S1"], "P1", DummyFROI(task="TASK")
+    )
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
         "_save",
@@ -81,23 +119,28 @@ def test_fconn_run_parcels_and_froi(monkeypatch):
         staticmethod(lambda subject, task, session, space, config: (
             [_bold_img(np.array([[1.0, 2.0, 10.0, 20.0], [2.0, 3.0, 20.0, 30.0]]))],
             ["01"],
+            ["A"],
         )),
     )
 
-    summary, detail = est.run(
-        "P1", DummyFROI(task="TASK"), subject1="S1", task="TASK", run2="all"
-    )
+    summary, detail = est.run(task="TASK", froi2_run_label="all")
 
     assert "parcel1" in summary.columns
     assert "froi2" in summary.columns
     assert "bold_run" in detail.columns
+    assert "bold_session" in detail.columns
     assert set(summary["parcel1"]) == {"ParcelA"}
     assert set(summary["froi2"]) == {"ROI"}
     assert set(detail["subject"]) == {"S1"}
+    assert set(detail["bold_session"]) == {"A"}
 
 
 def test_fconn_run_omits_froi_column_when_parcelless(monkeypatch):
-    est = fconn_mod.FunctionalConnectivityEstimator()
+    est = fconn_mod.FunctionalConnectivityEstimator(
+        ["S1"],
+        DummyFROI(task="TASK", parcels="none"),
+        DummyFROI(task="TASK", parcels="none"),
+    )
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
         "_save",
@@ -118,14 +161,11 @@ def test_fconn_run_omits_froi_column_when_parcelless(monkeypatch):
         staticmethod(lambda subject, task, session, space, config: (
             [_bold_img(np.array([[1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 4.0, 5.0]]))],
             ["01"],
+            [None],
         )),
     )
 
-    summary, detail = est.run(
-        DummyFROI(task="TASK", parcels="none"),
-        DummyFROI(task="TASK", parcels="none"),
-        subject1="S1",
-    )
+    summary, detail = est.run()
 
     assert "froi1" not in summary.columns
     assert "froi2" not in summary.columns
@@ -134,7 +174,7 @@ def test_fconn_run_omits_froi_column_when_parcelless(monkeypatch):
 
 
 def test_fconn_run_passes_cleaning_overrides(monkeypatch):
-    est = fconn_mod.FunctionalConnectivityEstimator()
+    est = fconn_mod.FunctionalConnectivityEstimator(["S1"], "P1", "P1")
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
         "_save",
@@ -146,7 +186,7 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
 
     def fake_get_cleaned(subject, task, session, space, config):
         captured.update(config)
-        return ([_bold_img(np.array([[1.0, 2.0], [2.0, 3.0]]))], ["01"])
+        return ([_bold_img(np.array([[1.0, 2.0], [2.0, 3.0]]))], ["01"], [None])
 
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
@@ -155,9 +195,6 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
     )
 
     est.run(
-        "P1",
-        "P1",
-        subject1="S1",
         task="TASK",
         volume_fwhm=6,
         low_pass=0.2,
@@ -204,3 +241,225 @@ def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp
         "trial_type.story",
         "trial_type.story_derivative",
     ]
+
+
+def test_fconn_run_surface_properties():
+    cleaned_imgs = [
+        _surface_img(
+            left=np.array(
+                [[1.0, 2.0, 3.0], [2.0, 3.0, 4.0], [0.0, 1.0, 2.0]]
+            ),
+            right=np.array(
+                [[10.0, 20.0, 30.0], [20.0, 30.0, 40.0], [5.0, 6.0, 7.0]]
+            ),
+        )
+    ]
+    froi1 = _surface_img([1.0, 1.0, 0.0], [0.0, 0.0, 0.0])
+    froi2 = _surface_img([0.0, 0.0, 0.0], [2.0, 2.0, 0.0])
+
+    summary, detail = fconn_mod.FunctionalConnectivityEstimator._run(
+        cleaned_imgs, froi1, froi2
+    )
+
+    assert list(summary.columns) == ["froi1", "froi2", "fisher_z"]
+    assert list(detail.columns) == ["run", "froi1", "froi2", "fisher_z"]
+    assert summary.shape[0] == 1
+    assert np.isfinite(summary["fisher_z"].iloc[0])
+
+
+def test_fconn_run_rejects_mixed_surface_and_volume_inputs(monkeypatch):
+    est = fconn_mod.FunctionalConnectivityEstimator(["S1"], "surface", "volume")
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_save",
+        lambda self, info: None,
+    )
+
+    def fake_get_parcels(arg):
+        if arg == "surface":
+            return _surface_img([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]), {1.0: "S"}
+        if arg == "volume":
+            return _img_from_flat(np.array([1.0, 0.0])), {1.0: "V"}
+        raise AssertionError(f"unexpected parcels arg {arg}")
+
+    monkeypatch.setattr(fconn_mod, "get_parcels", fake_get_parcels)
+
+    with pytest.raises(ValueError, match="both ROI inputs to be surface-based"):
+        est.run(task="TASK")
+
+
+def test_find_preprocessed_runs_falls_back_to_functional_mask(monkeypatch, tmp_path):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+    func_dir = bids_root / f"sub-{subject}" / "func"
+    anat_dir = bids_root / f"sub-{subject}" / "anat"
+    func_dir.mkdir(parents=True)
+    anat_dir.mkdir(parents=True)
+
+    func_file = (
+        func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-1_space-MNINonLinear_desc-preproc_bold.nii.gz"
+    )
+    func_file.write_bytes(b"")
+    (func_dir / f"sub-{subject}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv").write_text(
+        "framewise_displacement\n0.0\n",
+        encoding="utf-8",
+    )
+    sidecar = (
+        func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-1_space-MNINonLinear_bold.json"
+    )
+    sidecar.write_text(
+        json.dumps({"RepetitionTime": 0.72}),
+        encoding="utf-8",
+    )
+    func_mask = (
+        func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+    )
+    func_mask.write_bytes(b"")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
+            subject=subject,
+            task="LANGUAGE",
+            session=None,
+            space="MNINonLinear",
+            mask_suffix="_desc-brain_mask.nii.gz",
+        )
+
+    assert len(run_records) == 1
+    assert run_records[0]["mask_file"] == func_mask
+    assert run_records[0]["sidecar"] == {"RepetitionTime": 0.72}
+    assert any("using functional mask" in str(w.message) for w in caught)
+
+
+def test_find_preprocessed_runs_uses_all_sessions_when_session_none(
+    monkeypatch, tmp_path
+):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+    for session_label in ("01", "02"):
+        func_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "func"
+        anat_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "anat"
+        func_dir.mkdir(parents=True)
+        anat_dir.mkdir(parents=True)
+
+        func_file = (
+            func_dir
+            / (
+                f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+                "space-MNINonLinear_desc-preproc_bold.nii.gz"
+            )
+        )
+        func_file.write_bytes(b"")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+        ).write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_bold.json"
+        ).write_text(json.dumps({"RepetitionTime": 0.72}), encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+        ).write_bytes(b"")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+
+    run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
+        subject=subject,
+        task="LANGUAGE",
+        session=None,
+        space="MNINonLinear",
+        mask_suffix="_desc-brain_mask.nii.gz",
+    )
+
+    assert len(run_records) == 2
+    assert [record["session_label"] for record in run_records] == ["01", "02"]
+
+
+def test_find_preprocessed_surface_runs_uses_all_sessions_when_session_none(
+    monkeypatch, tmp_path
+):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+    for session_label in ("01", "02"):
+        func_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "func"
+        anat_dir = bids_root / f"sub-{subject}" / "anat"
+        func_dir.mkdir(parents=True)
+        anat_dir.mkdir(parents=True, exist_ok=True)
+
+        left_file = (
+            func_dir
+            / (
+                f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_hemi-L_"
+                "space-fsLR32k_desc-preproc_bold.func.gii"
+            )
+        )
+        left_file.write_bytes(b"")
+        right_file = Path(str(left_file).replace("_hemi-L_", "_hemi-R_"))
+        right_file.write_bytes(b"")
+        Path(str(left_file).replace(".func.gii", ".json")).write_text(
+            json.dumps({"RepetitionTime": 0.72}),
+            encoding="utf-8",
+        )
+        Path(str(right_file).replace(".func.gii", ".json")).write_text(
+            json.dumps({"RepetitionTime": 0.72}),
+            encoding="utf-8",
+        )
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+        ).write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "_find_surface_mesh_paths",
+        lambda preproc_root, subject, space: {
+            "L": preproc_root / f"sub-{subject}" / "anat" / f"sub-{subject}_hemi-L_space-{space}_midthickness.surf.gii",
+            "R": preproc_root / f"sub-{subject}" / "anat" / f"sub-{subject}_hemi-R_space-{space}_midthickness.surf.gii",
+        },
+    )
+
+    run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
+        subject=subject,
+        task="LANGUAGE",
+        session=None,
+        space="fsLR32k",
+    )
+
+    assert len(run_records) == 2
+    assert [record["session_label"] for record in run_records] == ["01", "02"]

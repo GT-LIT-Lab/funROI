@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Mapping
+import json
 
 import pandas as pd
 
@@ -7,6 +8,18 @@ import pandas as pd
 def _normalize_record_value(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, Mapping):
+        return json.dumps(
+            {
+                str(key): _normalize_record_value(val)
+                for key, val in value.items()
+            },
+            sort_keys=True,
+        )
+    if isinstance(value, (list, tuple)):
+        return json.dumps(
+            [_normalize_record_value(item) for item in value]
+        )
     return value
 
 

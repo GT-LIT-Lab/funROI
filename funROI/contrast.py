@@ -1,13 +1,16 @@
-from .settings import get_bids_deriv_folder
-from nilearn.image import load_img
-from typing import Dict, List, Tuple, Optional
-import pandas as pd
 import ast
-import numpy as np
-import scipy
-from .utils import validate_arguments, _get_orthogonalized_run_labels
 import glob
 import re
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import scipy
+from nilearn.image import load_img
+
+from ._surface import SURFACE_HEMIS, load_surface_numeric_data
+from .settings import get_bids_deriv_folder
+from .utils import _get_orthogonalized_run_labels, validate_arguments
 
 
 _get_contrast_folder = lambda subject, task: (
@@ -23,6 +26,15 @@ _get_contrast_info_path = lambda subject, task: (
 _get_contrast_path = lambda subject, task, run_label, contrast, type: (
     _get_contrast_folder(subject, task)
     / f"sub-{subject}_task-{task}_run-{run_label}_contrast-{contrast}_{type}.nii.gz"
+)
+_get_surface_contrast_path = (
+    lambda subject, task, run_label, contrast, type, hemi: (
+        _get_contrast_folder(subject, task)
+        / (
+            f"sub-{subject}_task-{task}_run-{run_label}_contrast-{contrast}"
+            f"_hemi-{hemi}_{type}.func.gii"
+        )
+    )
 )
 
 _get_model_folder = lambda subject, task: (
@@ -46,11 +58,15 @@ _get_residuals_path = lambda subject, task: (
     _get_model_folder(subject, task)
     / f"sub-{subject}_task-{task}_residuals.nii.gz"
 )
+_get_surface_residuals_path = lambda subject, task, hemi: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_residuals_hemi-{hemi}.func.gii"
+)
 
 
 def _get_contrast_vector(
     subject: str, task: str, contrast: str
-) -> List[float]:
+) -> Optional[List[float]]:
     contrast_info_path = _get_contrast_info_path(subject, task)
     if not contrast_info_path.exists():
         return None
@@ -68,8 +84,15 @@ def _get_contrast_runs(subject: str, task: str, contrast: str) -> List[str]:
     """
     Search for all numerically labeled runs for a contrast.
     """
-    base_pattern = _get_contrast_path(subject, task, "*", contrast, "*")
-    matched_files = glob.glob(str(base_pattern))
+    matched_files = glob.glob(
+        str(_get_contrast_path(subject, task, "*", contrast, "*"))
+    ) + glob.glob(
+        str(
+            _get_surface_contrast_path(
+                subject, task, "*", contrast, "*", "L"
+            )
+        )
+    )
     run_numbers = []
     run_pattern = re.compile(r"run-(\d+)")
     for file_path in matched_files:
@@ -79,28 +102,6 @@ def _get_contrast_runs(subject: str, task: str, contrast: str) -> List[str]:
             if run_number not in run_numbers:
                 run_numbers.append(run_number)
     return sorted(run_numbers)
-
-
-def _get_contrast_runs_by_group(
-    subject: str, task: str, contrast: str, run_label: str
-) -> List[str]:
-    """
-    Resolve a run label to its underlying numerically labeled runs.
-    """
-    runs = _get_contrast_runs(subject, task, contrast)
-    run_groups = _get_run_group_info(subject, task)
-    if run_label in run_groups:
-        return run_groups[run_label]
-    if run_label == "all":
-        return runs
-    elif run_label == "odd":
-        return [run for run in runs if int(run) % 2 == 1]
-    elif run_label == "even":
-        return [run for run in runs if int(run) % 2 == 0]
-    elif run_label.startswith("orth"):
-        return [run for run in runs if run != run_label[4:]]
-    else:
-        return [run_label]
 
 
 def _get_run_group_info(subject: str, task: str) -> Dict[str, List[str]]:
@@ -122,6 +123,27 @@ def _get_run_group_info(subject: str, task: str) -> Dict[str, List[str]]:
     }
 
 
+def _get_contrast_runs_by_group(
+    subject: str, task: str, contrast: str, run_label: str
+) -> List[str]:
+    """
+    Resolve a run label to its underlying numerically labeled runs.
+    """
+    runs = _get_contrast_runs(subject, task, contrast)
+    run_groups = _get_run_group_info(subject, task)
+    if run_label in run_groups:
+        return run_groups[run_label]
+    if run_label == "all":
+        return runs
+    if run_label == "odd":
+        return [run for run in runs if int(run) % 2 == 1]
+    if run_label == "even":
+        return [run for run in runs if int(run) % 2 == 0]
+    if run_label.startswith("orth"):
+        return [run for run in runs if run != run_label[4:]]
+    return [run_label]
+
+
 @validate_arguments(
     group={1, 2},
     type={"effect", "t", "variance", "p"},
@@ -134,7 +156,7 @@ def _get_orthogonalized_contrast_data(
     group: int,
     type: str,
     orthogonalization: Optional[str] = "all-but-one",
-) -> Tuple[np.ndarray, List[str]]:
+) -> Tuple[Optional[np.ndarray], Optional[List[str]]]:
     """
     Get the orthogonalized contrast data.
 
@@ -157,7 +179,7 @@ def _get_orthogonalized_contrast_data(
 @validate_arguments(type={"effect", "t", "variance", "p"})
 def _get_contrast_data(
     subject: str, task: str, run_label: str, contrast: str, type: str
-) -> np.ndarray:
+) -> Optional[np.ndarray]:
     """
     Get the contrast data by run label.
 
@@ -168,15 +190,31 @@ def _get_contrast_data(
     contrast_img_path = _get_contrast_path(
         subject, task, run_label, contrast, type
     )
-    if not contrast_img_path.exists():
-        return None
-    dat = load_img(contrast_img_path).get_fdata().flatten()
+    if contrast_img_path.exists():
+        dat = load_img(contrast_img_path).get_fdata().flatten()
+    else:
+        surface_paths = [
+            _get_surface_contrast_path(
+                subject, task, run_label, contrast, type, hemi
+            )
+            for hemi in SURFACE_HEMIS
+        ]
+        existing_paths = [path for path in surface_paths if path.exists()]
+        if len(existing_paths) == 0:
+            return None
+        dat = np.concatenate(
+            [
+                load_surface_numeric_data(surface_path).reshape(-1)
+                for surface_path in existing_paths
+            ]
+        )
     if type == "p":
+        dat = dat.astype(float, copy=True)
         dat[dat == 0] = np.nan
     return dat
 
 
-def _get_design_matrix(subject: str, task: str) -> pd.DataFrame:
+def _get_design_matrix(subject: str, task: str) -> Optional[pd.DataFrame]:
     """
     Get the design matrix for a subject and task.
     """
