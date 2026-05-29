@@ -47,6 +47,7 @@ FC_CLEAN_CONFIG = {
     "regress_out_task": True,
     "task_conditions": None,
     "regress_task_conditions": None,
+    "concat_conditions_across_runs": False,
     "low_pass": 0.1,
     "high_pass": 0.01,
     "min_T": 50,
@@ -71,6 +72,7 @@ FC_PREPROC_CONFIG_KEYS = (
     "detrend",
     "regress_out_task",
     "regress_task_conditions",
+    "concat_conditions_across_runs",
     "low_pass",
     "high_pass",
 )
@@ -520,6 +522,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         regress_task_conditions: Optional[
             Union[str, List[str], Tuple[str, ...]]
         ] = None,
+        concat_conditions_across_runs: bool = False,
         low_pass: Optional[float] = 0.1,
         high_pass: Optional[float] = 0.01,
         min_T: int = 50,
@@ -547,6 +550,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             "regress_task_conditions": _normalize_task_conditions(
                 regress_task_conditions
             ),
+            "concat_conditions_across_runs": concat_conditions_across_runs,
             "low_pass": low_pass,
             "high_pass": high_pass,
             "min_T": min_T,
@@ -725,6 +729,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             prepared_runs,
             config["task_conditions"],
             config["min_T"],
+            config["concat_conditions_across_runs"],
         )
         if len(selected_runs) == 0:
             raise ValueError(
@@ -743,6 +748,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         prepared_runs: List[Dict],
         task_conditions: Optional[List[str]],
         min_T: int,
+        concat_conditions_across_runs: bool,
     ) -> List[Dict]:
         selected_runs = []
         total_selected_timepoints = 0
@@ -781,14 +787,80 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             )
             total_selected_timepoints += int(np.sum(selected_frames))
 
-        if task_conditions is not None and total_selected_timepoints < min_T:
-            warnings.warn(
-                "Skipping subject because the concatenated selected task "
-                f"conditions yielded only {total_selected_timepoints} "
-                f"timepoints, fewer than min_T={min_T}."
-            )
-            return []
+        if task_conditions is not None and concat_conditions_across_runs:
+            if total_selected_timepoints < min_T:
+                warnings.warn(
+                    "Skipping subject because the concatenated selected task "
+                    f"conditions yielded only {total_selected_timepoints} "
+                    f"timepoints, fewer than min_T={min_T}."
+                )
+                return []
+            if len(selected_runs) == 0:
+                return []
+            return [FunctionalConnectivityEstimator._concatenate_prepared_runs(selected_runs)]
+
+        if task_conditions is not None and not concat_conditions_across_runs:
+            filtered_runs = []
+            for prepared in selected_runs:
+                n_timepoints = _get_img_n_timepoints(prepared["cleaned_img"])
+                if n_timepoints < min_T:
+                    source_name = prepared.get(
+                        "func_file",
+                        prepared.get("func_files", {}).get("L"),
+                    )
+                    if source_name is not None:
+                        warnings.warn(
+                            f"Skipping {Path(source_name).name}: insufficient "
+                            "timepoints after selecting task conditions."
+                        )
+                    continue
+                filtered_runs.append(prepared)
+            return filtered_runs
+
         return selected_runs
+
+    @staticmethod
+    def _concatenate_prepared_runs(prepared_runs: List[Dict]) -> Dict:
+        first = prepared_runs[0]
+        cleaned_imgs = [prepared["cleaned_img"] for prepared in prepared_runs]
+
+        if is_surface_image(cleaned_imgs[0]):
+            concatenated_img = SurfaceImage(
+                mesh=cleaned_imgs[0].mesh,
+                data={
+                    part_name: np.concatenate(
+                        [
+                            np.asarray(img.data.parts[part_name])
+                            for img in cleaned_imgs
+                        ],
+                        axis=-1,
+                    )
+                    for part_name in cleaned_imgs[0].data.parts
+                },
+            )
+        else:
+            concatenated_img = image.concat_imgs(
+                cleaned_imgs, auto_resample=True
+            )
+
+        run_labels = [prepared["run_label"] for prepared in prepared_runs]
+        session_labels = [
+            prepared["session_label"]
+            for prepared in prepared_runs
+            if prepared["session_label"] is not None
+        ]
+        session_label = None
+        if len(session_labels) == 1:
+            session_label = session_labels[0]
+        elif len(session_labels) > 1:
+            session_label = "+".join(session_labels)
+
+        return {
+            **first,
+            "cleaned_img": concatenated_img,
+            "run_label": "concatenated:" + "+".join(run_labels),
+            "session_label": session_label,
+        }
 
     @staticmethod
     def _find_preprocessed_runs(

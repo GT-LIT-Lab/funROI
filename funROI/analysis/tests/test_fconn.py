@@ -201,6 +201,7 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
         regress_out_task=False,
         task_conditions=["story", "math"],
         regress_task_conditions=["story"],
+        concat_conditions_across_runs=True,
     )
 
     assert captured["volume_fwhm"] == 6
@@ -208,6 +209,7 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
     assert captured["regress_out_task"] is False
     assert captured["task_conditions"] == ["story", "math"]
     assert captured["regress_task_conditions"] == ["story"]
+    assert captured["concat_conditions_across_runs"] is True
 
 
 def test_preprocess_and_load_preprocessed_bold_for_fc_uses_cache(
@@ -448,7 +450,7 @@ def test_select_task_condition_frames_returns_none_when_events_missing(tmp_path)
     assert any("no events file is available" in str(w.message) for w in caught)
 
 
-def test_select_preprocessed_runs_accumulates_selected_timepoints_across_runs(
+def test_select_preprocessed_runs_applies_min_t_per_run_without_concatenation(
     monkeypatch,
 ):
     prepared_runs = [
@@ -487,12 +489,59 @@ def test_select_preprocessed_runs_accumulates_selected_timepoints_across_runs(
     selected_runs = fconn_mod.FunctionalConnectivityEstimator._select_preprocessed_runs(
         prepared_runs,
         ["story"],
-        min_T=4,
+        min_T=2,
+        concat_conditions_across_runs=False,
     )
 
     assert len(selected_runs) == 2
     assert selected_runs[0]["cleaned_img"].get_fdata().shape[-1] == 2
     assert selected_runs[1]["cleaned_img"].get_fdata().shape[-1] == 2
+
+
+def test_select_preprocessed_runs_can_concatenate_across_runs(monkeypatch):
+    prepared_runs = [
+        {
+            "cleaned_img": _bold_img(np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]])),
+            "run_label": "01",
+            "session_label": None,
+            "func_file": Path("run-01.nii.gz"),
+            "events_file": Path("run-01_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+        {
+            "cleaned_img": _bold_img(np.array([[4.0, 5.0], [5.0, 6.0], [6.0, 7.0]])),
+            "run_label": "02",
+            "session_label": None,
+            "func_file": Path("run-02.nii.gz"),
+            "events_file": Path("run-02_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+    ]
+
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_select_task_condition_frames",
+        staticmethod(
+            lambda record, n_timepoints, task_conditions: np.array(
+                [True, True, False]
+            )
+        ),
+    )
+
+    selected_runs = fconn_mod.FunctionalConnectivityEstimator._select_preprocessed_runs(
+        prepared_runs,
+        ["story"],
+        min_T=4,
+        concat_conditions_across_runs=True,
+    )
+
+    assert len(selected_runs) == 1
+    assert selected_runs[0]["cleaned_img"].get_fdata().shape[-1] == 4
+    assert selected_runs[0]["run_label"] == "concatenated:01+02"
 
 
 def test_fconn_run_surface_properties():
