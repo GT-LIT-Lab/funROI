@@ -199,11 +199,13 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
         volume_fwhm=6,
         low_pass=0.2,
         regress_out_task=False,
+        task_conditions=["story", "math"],
     )
 
     assert captured["volume_fwhm"] == 6
     assert captured["low_pass"] == 0.2
     assert captured["regress_out_task"] is False
+    assert captured["task_conditions"] == ["story", "math"]
 
 
 def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp_path):
@@ -241,6 +243,76 @@ def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp
         "trial_type.story",
         "trial_type.story_derivative",
     ]
+
+
+def test_build_task_regressors_can_select_and_concatenate_conditions(
+    monkeypatch, tmp_path
+):
+    events_file = tmp_path / "events.tsv"
+    pd.DataFrame(
+        {
+            "trial_type": ["story", "math", "fix"],
+            "onset": [0.0, 10.0, 20.0],
+            "duration": [5.0, 5.0, 5.0],
+        }
+    ).to_csv(events_file, sep="\t", index=False)
+
+    monkeypatch.setattr(
+        fconn_mod.glm.first_level,
+        "compute_regressor",
+        lambda *args, **kwargs: (
+            np.ones((4, 2), dtype=float),
+            None,
+        ),
+    )
+
+    regs = fconn_mod.FunctionalConnectivityEstimator._build_task_regressors(
+        events_file=events_file,
+        sidecar={"SliceTimingCorrected": True},
+        TR=2.0,
+        start_time=0.0,
+        n_timepoints=4,
+        task_conditions=["story", "math"],
+    )
+
+    assert len(regs) == 1
+    assert list(regs[0].columns) == [
+        "trial_type.selected_task",
+        "trial_type.selected_task_derivative",
+    ]
+
+
+def test_build_task_regressors_returns_empty_when_selected_conditions_missing(
+    monkeypatch, tmp_path
+):
+    events_file = tmp_path / "events.tsv"
+    pd.DataFrame(
+        {
+            "trial_type": ["story"],
+            "onset": [0.0],
+            "duration": [5.0],
+        }
+    ).to_csv(events_file, sep="\t", index=False)
+
+    monkeypatch.setattr(
+        fconn_mod.glm.first_level,
+        "compute_regressor",
+        lambda *args, **kwargs: (
+            np.ones((4, 2), dtype=float),
+            None,
+        ),
+    )
+
+    regs = fconn_mod.FunctionalConnectivityEstimator._build_task_regressors(
+        events_file=events_file,
+        sidecar={"SliceTimingCorrected": True},
+        TR=2.0,
+        start_time=0.0,
+        n_timepoints=4,
+        task_conditions=["math"],
+    )
+
+    assert regs == []
 
 
 def test_fconn_run_surface_properties():

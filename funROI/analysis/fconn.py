@@ -39,6 +39,7 @@ FC_CLEAN_CONFIG = {
     "standardize": True,
     "detrend": True,
     "regress_out_task": True,
+    "task_conditions": None,
     "low_pass": 0.1,
     "high_pass": 0.01,
     "min_T": 50,
@@ -57,6 +58,16 @@ def _normalize_standardize_arg(standardize):
     if standardize is False:
         return None
     return standardize
+
+
+def _normalize_task_conditions(
+    task_conditions: Optional[Union[str, List[str], Tuple[str, ...]]]
+) -> Optional[List[str]]:
+    if task_conditions is None:
+        return None
+    if isinstance(task_conditions, str):
+        return [task_conditions]
+    return list(task_conditions)
 
 
 def _parse_bids_entities(path: Path) -> Dict[str, str]:
@@ -140,6 +151,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         standardize: Union[bool, str, None] = True,
         detrend: bool = True,
         regress_out_task: bool = True,
+        task_conditions: Optional[Union[str, List[str], Tuple[str, ...]]] = None,
         low_pass: Optional[float] = 0.1,
         high_pass: Optional[float] = 0.01,
         min_T: int = 50,
@@ -163,6 +175,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             "standardize": _normalize_standardize_arg(standardize),
             "detrend": detrend,
             "regress_out_task": regress_out_task,
+            "task_conditions": _normalize_task_conditions(task_conditions),
             "low_pass": low_pass,
             "high_pass": high_pass,
             "min_T": min_T,
@@ -781,6 +794,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     record["TR"],
                     record["StartTime"],
                     len(confounds_raw),
+                    task_conditions=config["task_conditions"],
                 )
             )
 
@@ -859,6 +873,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     record["TR"],
                     record["StartTime"],
                     len(confounds_raw),
+                    task_conditions=config["task_conditions"],
                 )
             )
 
@@ -916,10 +931,16 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         TR: float,
         start_time: float,
         n_timepoints: int,
+        task_conditions: Optional[List[str]] = None,
     ) -> List[pd.DataFrame]:
         events = pd.read_csv(events_file, sep="\t")
         if "trial_type" not in events.columns:
             events["trial_type"] = "dummy"
+        if task_conditions is not None:
+            events = events[events["trial_type"].isin(task_conditions)].copy()
+            if events.shape[0] == 0:
+                return []
+            events["trial_type"] = "selected_task"
         events = events[["trial_type", "onset", "duration"]]
         dummies = pd.get_dummies(
             events["trial_type"], prefix="trial_type", prefix_sep="."
