@@ -76,6 +76,8 @@ class FROIConfig(dict):
     ):
         if threshold_value < 0:
             raise ValueError("Threshold value must be non-negative.")
+        if len(contrasts) <= 1:
+            conjunction_type = None
         self.task = task
         self.contrasts = contrasts
         self.conjunction_type = conjunction_type

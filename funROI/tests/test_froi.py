@@ -169,6 +169,24 @@ def test_froi_config_special_cases_none_parcels():
     assert record["labels"] is None
 
 
+def test_froi_config_coerces_single_contrast_conjunction_to_none(tmp_path):
+    parcels_path = _nii(tmp_path / "parcels.nii.gz", np.zeros((2, 2, 2)))
+
+    cfg = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=ParcelsConfig(parcels_path),
+        conjunction_type="and",
+    )
+
+    assert cfg.conjunction_type is None
+    assert cfg["conjunction_type"] is None
+    record = froi_mod._build_froi_registry_record(cfg)
+    assert record["conjunction_type"] is None
+
+
 def test_create_froi_with_real_parcels_labels_produces_labeled_mask(tmp_path, monkeypatch):
     """
     Branch: parcels exist -> froi mask is integer-labeled by parcels.
