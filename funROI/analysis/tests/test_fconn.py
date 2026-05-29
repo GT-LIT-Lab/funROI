@@ -200,12 +200,14 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
         low_pass=0.2,
         regress_out_task=False,
         task_conditions=["story", "math"],
+        regress_task_conditions=["story"],
     )
 
     assert captured["volume_fwhm"] == 6
     assert captured["low_pass"] == 0.2
     assert captured["regress_out_task"] is False
     assert captured["task_conditions"] == ["story", "math"]
+    assert captured["regress_task_conditions"] == ["story"]
 
 
 def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp_path):
@@ -313,6 +315,52 @@ def test_build_task_regressors_returns_empty_when_selected_conditions_missing(
     )
 
     assert regs == []
+
+
+def test_select_task_condition_frames_concatenates_selected_events(tmp_path):
+    events_file = tmp_path / "events.tsv"
+    pd.DataFrame(
+        {
+            "trial_type": ["story", "fix", "math"],
+            "onset": [0.0, 4.0, 8.0],
+            "duration": [2.0, 2.0, 2.0],
+        }
+    ).to_csv(events_file, sep="\t", index=False)
+
+    record = {
+        "events_file": events_file,
+        "sidecar": {"SliceTimingCorrected": False},
+        "TR": 2.0,
+        "StartTime": 0.0,
+    }
+
+    selected = fconn_mod.FunctionalConnectivityEstimator._select_task_condition_frames(
+        record,
+        n_timepoints=6,
+        task_conditions=["story", "math"],
+    )
+
+    assert selected.tolist() == [True, True, False, False, True, True]
+
+
+def test_select_task_condition_frames_returns_none_when_events_missing(tmp_path):
+    record = {
+        "events_file": tmp_path / "missing.tsv",
+        "sidecar": {"SliceTimingCorrected": False},
+        "TR": 2.0,
+        "StartTime": 0.0,
+    }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        selected = fconn_mod.FunctionalConnectivityEstimator._select_task_condition_frames(
+            record,
+            n_timepoints=6,
+            task_conditions=["story"],
+        )
+
+    assert selected is None
+    assert any("no events file is available" in str(w.message) for w in caught)
 
 
 def test_fconn_run_surface_properties():

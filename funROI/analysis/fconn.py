@@ -40,6 +40,7 @@ FC_CLEAN_CONFIG = {
     "detrend": True,
     "regress_out_task": True,
     "task_conditions": None,
+    "regress_task_conditions": None,
     "low_pass": 0.1,
     "high_pass": 0.01,
     "min_T": 50,
@@ -68,6 +69,22 @@ def _normalize_task_conditions(
     if isinstance(task_conditions, str):
         return [task_conditions]
     return list(task_conditions)
+
+
+def _frame_times_from_sidecar(
+    sidecar: Dict,
+    TR: float,
+    start_time: float,
+    n_timepoints: int,
+) -> np.ndarray:
+    slice_time_ref = sidecar.get("SliceTimingCorrected")
+    if slice_time_ref is True:
+        slice_time_ref = 0.5
+    elif slice_time_ref is None:
+        slice_time_ref = 0.0
+    else:
+        slice_time_ref = float(slice_time_ref)
+    return np.arange(n_timepoints) * TR + start_time + (slice_time_ref * TR)
 
 
 def _parse_bids_entities(path: Path) -> Dict[str, str]:
@@ -152,6 +169,9 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         detrend: bool = True,
         regress_out_task: bool = True,
         task_conditions: Optional[Union[str, List[str], Tuple[str, ...]]] = None,
+        regress_task_conditions: Optional[
+            Union[str, List[str], Tuple[str, ...]]
+        ] = None,
         low_pass: Optional[float] = 0.1,
         high_pass: Optional[float] = 0.01,
         min_T: int = 50,
@@ -176,6 +196,9 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             "detrend": detrend,
             "regress_out_task": regress_out_task,
             "task_conditions": _normalize_task_conditions(task_conditions),
+            "regress_task_conditions": _normalize_task_conditions(
+                regress_task_conditions
+            ),
             "low_pass": low_pass,
             "high_pass": high_pass,
             "min_T": min_T,
@@ -794,7 +817,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     record["TR"],
                     record["StartTime"],
                     len(confounds_raw),
-                    task_conditions=config["task_conditions"],
+                    task_conditions=config["regress_task_conditions"],
                 )
             )
 
@@ -824,6 +847,15 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 f"Skipping {record['func_file'].name}: insufficient timepoints."
             )
             return None
+        selected_frames = (
+            FunctionalConnectivityEstimator._select_task_condition_frames(
+                record,
+                func_img.shape[3],
+                config["task_conditions"],
+            )
+        )
+        if config["task_conditions"] is not None and selected_frames is None:
+            return None
         if config["target_affine"] is not None:
             func_img = image.resample_to_img(
                 func_img, mask_img, copy_header=True, force_resample=True
@@ -840,6 +872,14 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         )
         masker.fit()
         cleaned_data = masker.transform(func_img, confounds=confounds)
+        if selected_frames is not None:
+            cleaned_data = cleaned_data[selected_frames]
+            if cleaned_data.shape[0] < config["min_T"]:
+                warnings.warn(
+                    f"Skipping {record['func_file'].name}: insufficient "
+                    "timepoints after selecting task conditions."
+                )
+                return None
         return masker.inverse_transform(cleaned_data)
 
     @staticmethod
@@ -873,7 +913,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     record["TR"],
                     record["StartTime"],
                     len(confounds_raw),
-                    task_conditions=config["task_conditions"],
+                    task_conditions=config["regress_task_conditions"],
                 )
             )
 
@@ -884,6 +924,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         func_img = load_surface_image(record["func_files"], record["mesh_paths"])
         cleaned_parts = {}
         n_timepoints = None
+        selected_frames = None
         for hemi in SURFACE_HEMIS:
             part_name = SURFACE_PARTS[hemi]
             hemi_data = np.asarray(
@@ -902,6 +943,19 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "Skipping surface run: insufficient timepoints."
                 )
                 return None
+            if selected_frames is None:
+                selected_frames = (
+                    FunctionalConnectivityEstimator._select_task_condition_frames(
+                        record,
+                        n_timepoints,
+                        config["task_conditions"],
+                    )
+                )
+                if (
+                    config["task_conditions"] is not None
+                    and selected_frames is None
+                ):
+                    return None
 
             hemi_data = _smooth_surface_array(
                 hemi_data,
@@ -917,6 +971,14 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 high_pass=config["high_pass"],
                 t_r=record["TR"],
             )
+            if selected_frames is not None:
+                cleaned = cleaned[selected_frames]
+                if cleaned.shape[0] < config["min_T"]:
+                    warnings.warn(
+                        "Skipping surface run: insufficient timepoints after "
+                        "selecting task conditions."
+                    )
+                    return None
             cleaned_parts[part_name] = cleaned.T.astype(np.float32)
 
         return SurfaceImage(
@@ -948,15 +1010,8 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         events = pd.concat([dummies, events[["onset", "duration"]]], axis=1)
         trial_cols = [col for col in events.columns if col.startswith("trial_type")]
 
-        slice_time_ref = sidecar.get("SliceTimingCorrected")
-        if slice_time_ref is True:
-            slice_time_ref = 0.5
-        elif slice_time_ref is None:
-            slice_time_ref = 0.0
-        else:
-            slice_time_ref = float(slice_time_ref)
-        frame_times = (
-            np.arange(n_timepoints) * TR + start_time + (slice_time_ref * TR)
+        frame_times = _frame_times_from_sidecar(
+            sidecar, TR, start_time, n_timepoints
         )
 
         regressors = []
@@ -976,6 +1031,62 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 column_names = [trial_col, f"{trial_col}_derivative"]
             regressors.append(pd.DataFrame(regressor, columns=column_names))
         return regressors
+
+    @staticmethod
+    def _select_task_condition_frames(
+        record: Dict,
+        n_timepoints: int,
+        task_conditions: Optional[List[str]],
+    ) -> Optional[np.ndarray]:
+        if task_conditions is None:
+            return None
+        events_file = record["events_file"]
+        if events_file is None or not Path(events_file).exists():
+            warnings.warn(
+                "Skipping run because task condition selection was requested "
+                "but no events file is available."
+            )
+            return None
+
+        events = pd.read_csv(events_file, sep="\t")
+        if "trial_type" not in events.columns:
+            warnings.warn(
+                f"Skipping {Path(events_file).name}: events file does not "
+                "contain a trial_type column."
+            )
+            return None
+
+        events = events[events["trial_type"].isin(task_conditions)].copy()
+        if events.shape[0] == 0:
+            warnings.warn(
+                f"Skipping {Path(events_file).name}: none of the requested "
+                "task conditions were found."
+            )
+            return None
+
+        frame_times = _frame_times_from_sidecar(
+            record["sidecar"],
+            record["TR"],
+            record["StartTime"],
+            n_timepoints,
+        )
+        frame_starts = frame_times - (record["TR"] / 2.0)
+        frame_ends = frame_times + (record["TR"] / 2.0)
+        selected = np.zeros(n_timepoints, dtype=bool)
+
+        for _, event in events.iterrows():
+            onset = float(event["onset"])
+            duration = float(event["duration"])
+            event_end = onset + max(duration, 0.0)
+            selected |= (frame_starts <= event_end) & (frame_ends > onset)
+
+        if not np.any(selected):
+            warnings.warn(
+                f"Skipping {Path(events_file).name}: none of the requested "
+                "task conditions overlapped any sampled frames."
+            )
+            return None
+        return selected
 
     @staticmethod
     def _run(cleaned_imgs: List, froi1_img, froi2_img) -> Tuple[pd.DataFrame, pd.DataFrame]:
