@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple
+import hashlib
 import json
 import re
 import warnings
@@ -16,11 +17,16 @@ from .._surface import (
     flatten_image_data,
     is_surface_image,
     load_surface_image,
+    save_surface_image,
 )
 from ..first_level.nilearn import _find_surface_mesh_paths, _smooth_surface_array
 from ..froi import FROIConfig, _get_froi_data
 from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
-from ..settings import get_bids_data_folder, get_bids_preprocessed_folder
+from ..settings import (
+    get_bids_data_folder,
+    get_bids_deriv_folder,
+    get_bids_preprocessed_folder,
+)
 from .utils import AnalysisSaver
 
 
@@ -51,6 +57,23 @@ RUN_RE = re.compile(r"_run-([A-Za-z0-9]+)_")
 SPACE_RE = re.compile(r"_space-([A-Za-z0-9]+)_")
 SES_RE = re.compile(r"_ses-([A-Za-z0-9]+)_")
 ENTITY_RE = re.compile(r"(^|_)([A-Za-z0-9]+)-([^_]+)")
+FC_PREPROC_DERIV_NAME = "fconn_preproc"
+FC_PREPROC_CONFIG_KEYS = (
+    "clean_surf",
+    "mask_suffix",
+    "mask_fwhm",
+    "target_affine",
+    "confounds_regex",
+    "fd_threshold",
+    "volume_fwhm",
+    "surface_fwhm",
+    "standardize",
+    "detrend",
+    "regress_out_task",
+    "regress_task_conditions",
+    "low_pass",
+    "high_pass",
+)
 
 
 def _normalize_standardize_arg(standardize):
@@ -129,6 +152,331 @@ def _find_matching_bids_file(
     if len(matches) == 0:
         return None
     return matches[0]
+
+
+def _make_json_serializable(value):
+    if isinstance(value, dict):
+        return {
+            str(key): _make_json_serializable(val)
+            for key, val in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_make_json_serializable(val) for val in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _build_fc_preproc_config(clean_config: Dict) -> Dict:
+    return {
+        key: _make_json_serializable(clean_config[key])
+        for key in FC_PREPROC_CONFIG_KEYS
+        if key in clean_config
+    }
+
+
+def _fc_preproc_config_hash(preproc_config: Dict) -> str:
+    payload = json.dumps(preproc_config, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _get_fc_preproc_root() -> Path:
+    return get_bids_deriv_folder() / FC_PREPROC_DERIV_NAME
+
+
+def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str, Path]:
+    config_hash = _fc_preproc_config_hash(preproc_config)
+    if "func_file" in record:
+        source_file = record["func_file"]
+    else:
+        source_file = record["func_files"]["L"]
+
+    relative_parent = source_file.relative_to(get_bids_preprocessed_folder()).parent
+    output_dir = _get_fc_preproc_root() / relative_parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if "func_file" in record:
+        output_name = source_file.name.replace(
+            "_desc-preproc_bold.nii.gz",
+            f"_desc-fcpreproc-{config_hash}_bold.nii.gz",
+        )
+        img_path = output_dir / output_name
+        meta_path = output_dir / output_name.replace(".nii.gz", ".json")
+        return {"img": img_path, "meta": meta_path}
+
+    paths = {}
+    for hemi, source_path in record["func_files"].items():
+        output_name = source_path.name.replace(
+            "_desc-preproc_bold.func.gii",
+            f"_desc-fcpreproc-{config_hash}_bold.func.gii",
+        )
+        paths[hemi] = output_dir / output_name
+    meta_path = output_dir / paths["L"].name.replace(".func.gii", ".json")
+    paths["meta"] = meta_path
+    return paths
+
+
+def _get_img_n_timepoints(img) -> int:
+    if is_surface_image(img):
+        return int(np.asarray(img.data.parts["left"]).shape[-1])
+    data = img.get_fdata()
+    if data.ndim < 4:
+        return 1
+    return int(data.shape[-1])
+
+
+def _subset_cleaned_img(img, selected_frames: np.ndarray):
+    if is_surface_image(img):
+        return SurfaceImage(
+            mesh=img.mesh,
+            data={
+                part_name: np.asarray(img.data.parts[part_name])[:, selected_frames]
+                for part_name in img.data.parts
+            },
+        )
+
+    data = img.get_fdata()
+    if data.ndim != 4:
+        raise ValueError("Cleaned functional image must be 4D.")
+    return image.new_img_like(
+        img,
+        data[..., selected_frames],
+        copy_header=True,
+    )
+
+
+def _load_cached_preprocessed_run(record: Dict, preproc_config: Dict):
+    cache_paths = _get_fc_preproc_record_paths(record, preproc_config)
+    if "img" in cache_paths:
+        if not cache_paths["img"].exists():
+            return None
+        return {
+            "cleaned_img": load_img(cache_paths["img"]),
+            "cache_paths": cache_paths,
+            **record,
+        }
+
+    if not all(cache_paths[hemi].exists() for hemi in SURFACE_HEMIS):
+        return None
+    return {
+        "cleaned_img": load_surface_image(
+            {hemi: cache_paths[hemi] for hemi in SURFACE_HEMIS},
+            record["mesh_paths"],
+        ),
+        "cache_paths": cache_paths,
+        **record,
+    }
+
+
+def _save_cached_preprocessed_run(cleaned_img, record: Dict, preproc_config: Dict):
+    cache_paths = _get_fc_preproc_record_paths(record, preproc_config)
+    metadata = {
+        "source_files": _make_json_serializable(
+            record.get("func_file", record.get("func_files"))
+        ),
+        "confounds_file": _make_json_serializable(record["confounds_file"]),
+        "events_file": _make_json_serializable(record["events_file"]),
+        "run_label": record["run_label"],
+        "session_label": record["session_label"],
+        "TR": record["TR"],
+        "StartTime": record["StartTime"],
+        "preproc_config": preproc_config,
+        "config_hash": _fc_preproc_config_hash(preproc_config),
+    }
+
+    if "img" in cache_paths:
+        cleaned_img.to_filename(cache_paths["img"])
+    else:
+        save_surface_image(
+            cleaned_img,
+            {hemi: cache_paths[hemi] for hemi in SURFACE_HEMIS},
+        )
+
+    with open(cache_paths["meta"], "w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+
+    return {
+        "cleaned_img": cleaned_img,
+        "cache_paths": cache_paths,
+        **record,
+    }
+
+
+def preprocess_bold_for_fc(
+    subjects: Union[str, List[str]],
+    task: str,
+    *,
+    session: Optional[str] = None,
+    space: Optional[str] = None,
+    clean_surf: bool = False,
+    mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
+    mask_fwhm: Optional[float] = FC_CLEAN_CONFIG["mask_fwhm"],
+    target_affine: Optional[List[List[float]]] = None,
+    confounds_regex: str = FC_CLEAN_CONFIG["confounds_regex"],
+    fd_threshold: Optional[float] = FC_CLEAN_CONFIG["fd_threshold"],
+    volume_fwhm: Optional[float] = FC_CLEAN_CONFIG["volume_fwhm"],
+    surface_fwhm: Optional[float] = FC_CLEAN_CONFIG["surface_fwhm"],
+    standardize: Union[bool, str, None] = FC_CLEAN_CONFIG["standardize"],
+    detrend: bool = FC_CLEAN_CONFIG["detrend"],
+    regress_out_task: bool = FC_CLEAN_CONFIG["regress_out_task"],
+    regress_task_conditions: Optional[
+        Union[str, List[str], Tuple[str, ...]]
+    ] = None,
+    low_pass: Optional[float] = FC_CLEAN_CONFIG["low_pass"],
+    high_pass: Optional[float] = FC_CLEAN_CONFIG["high_pass"],
+    overwrite: bool = False,
+) -> pd.DataFrame:
+    if isinstance(subjects, str):
+        subjects = [subjects]
+
+    clean_config = {
+        "clean_surf": clean_surf,
+        "mask_suffix": mask_suffix,
+        "mask_fwhm": mask_fwhm,
+        "target_affine": target_affine,
+        "confounds_regex": confounds_regex,
+        "fd_threshold": fd_threshold,
+        "volume_fwhm": volume_fwhm,
+        "surface_fwhm": surface_fwhm,
+        "standardize": _normalize_standardize_arg(standardize),
+        "detrend": detrend,
+        "regress_out_task": regress_out_task,
+        "regress_task_conditions": _normalize_task_conditions(
+            regress_task_conditions
+        ),
+        "task_conditions": None,
+        "low_pass": low_pass,
+        "high_pass": high_pass,
+        "min_T": 1,
+    }
+    preproc_config = _build_fc_preproc_config(clean_config)
+
+    manifest_rows = []
+    for subject in subjects:
+        prepared_runs = load_preprocessed_bold_for_fc(
+            subject,
+            task,
+            session=session,
+            space=space,
+            clean_surf=clean_surf,
+            mask_suffix=mask_suffix,
+            mask_fwhm=mask_fwhm,
+            target_affine=target_affine,
+            confounds_regex=confounds_regex,
+            fd_threshold=fd_threshold,
+            volume_fwhm=volume_fwhm,
+            surface_fwhm=surface_fwhm,
+            standardize=standardize,
+            detrend=detrend,
+            regress_out_task=regress_out_task,
+            regress_task_conditions=regress_task_conditions,
+            low_pass=low_pass,
+            high_pass=high_pass,
+            create_if_missing=True,
+            overwrite=overwrite,
+        )
+        for prepared in prepared_runs:
+            row = {
+                "subject": subject,
+                "task": task,
+                "run_label": prepared["run_label"],
+                "session_label": prepared["session_label"],
+                "config_hash": _fc_preproc_config_hash(preproc_config),
+            }
+            row.update(
+                {
+                    f"cache_{key}": str(path)
+                    for key, path in prepared["cache_paths"].items()
+                }
+            )
+            manifest_rows.append(row)
+    return pd.DataFrame(manifest_rows)
+
+
+def load_preprocessed_bold_for_fc(
+    subject: str,
+    task: str,
+    *,
+    session: Optional[str] = None,
+    space: Optional[str] = None,
+    clean_surf: bool = False,
+    mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
+    mask_fwhm: Optional[float] = FC_CLEAN_CONFIG["mask_fwhm"],
+    target_affine: Optional[List[List[float]]] = None,
+    confounds_regex: str = FC_CLEAN_CONFIG["confounds_regex"],
+    fd_threshold: Optional[float] = FC_CLEAN_CONFIG["fd_threshold"],
+    volume_fwhm: Optional[float] = FC_CLEAN_CONFIG["volume_fwhm"],
+    surface_fwhm: Optional[float] = FC_CLEAN_CONFIG["surface_fwhm"],
+    standardize: Union[bool, str, None] = FC_CLEAN_CONFIG["standardize"],
+    detrend: bool = FC_CLEAN_CONFIG["detrend"],
+    regress_out_task: bool = FC_CLEAN_CONFIG["regress_out_task"],
+    regress_task_conditions: Optional[
+        Union[str, List[str], Tuple[str, ...]]
+    ] = None,
+    low_pass: Optional[float] = FC_CLEAN_CONFIG["low_pass"],
+    high_pass: Optional[float] = FC_CLEAN_CONFIG["high_pass"],
+    create_if_missing: bool = False,
+    overwrite: bool = False,
+) -> List[Dict]:
+    clean_config = {
+        "clean_surf": clean_surf,
+        "mask_suffix": mask_suffix,
+        "mask_fwhm": mask_fwhm,
+        "target_affine": target_affine,
+        "confounds_regex": confounds_regex,
+        "fd_threshold": fd_threshold,
+        "volume_fwhm": volume_fwhm,
+        "surface_fwhm": surface_fwhm,
+        "standardize": _normalize_standardize_arg(standardize),
+        "detrend": detrend,
+        "regress_out_task": regress_out_task,
+        "regress_task_conditions": _normalize_task_conditions(
+            regress_task_conditions
+        ),
+        "task_conditions": None,
+        "low_pass": low_pass,
+        "high_pass": high_pass,
+        "min_T": 1,
+    }
+    preproc_config = _build_fc_preproc_config(clean_config)
+
+    if clean_surf:
+        run_records = FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
+            subject, task, session, space
+        )
+    else:
+        run_records = FunctionalConnectivityEstimator._find_preprocessed_runs(
+            subject, task, session, space, mask_suffix
+        )
+
+    prepared_runs = []
+    for record in run_records:
+        prepared = None
+        if not overwrite:
+            prepared = _load_cached_preprocessed_run(record, preproc_config)
+
+        if prepared is None and create_if_missing:
+            if clean_surf:
+                cleaned_img = FunctionalConnectivityEstimator._clean_surface_run(
+                    record, clean_config
+                )
+            else:
+                cleaned_img = FunctionalConnectivityEstimator._clean_run(
+                    record, clean_config
+                )
+            if cleaned_img is None:
+                continue
+            prepared = _save_cached_preprocessed_run(
+                cleaned_img, record, preproc_config
+            )
+
+        if prepared is not None:
+            prepared_runs.append(prepared)
+    return prepared_runs
 
 
 class FunctionalConnectivityEstimator(AnalysisSaver):
@@ -351,50 +699,96 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         space: Optional[str],
         config: Dict,
     ) -> Tuple[List, List[str], List[Optional[str]]]:
-        if config["clean_surf"]:
-            run_records = (
-                FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
-                    subject, task, session, space
-                )
-            )
-            cleaned_imgs = []
-            cleaned_run_labels = []
-            cleaned_session_labels = []
-            for record in run_records:
-                cleaned_img = FunctionalConnectivityEstimator._clean_surface_run(
-                    record, config
-                )
-                if cleaned_img is None:
-                    continue
-                cleaned_imgs.append(cleaned_img)
-                cleaned_run_labels.append(record["run_label"])
-                cleaned_session_labels.append(record["session_label"])
-
-            if len(cleaned_imgs) == 0:
-                raise ValueError(
-                    f"No usable preprocessed runs found for subject {subject} and task {task}."
-                )
-            return cleaned_imgs, cleaned_run_labels, cleaned_session_labels
-
-        run_records = FunctionalConnectivityEstimator._find_preprocessed_runs(
-            subject, task, session, space, config["mask_suffix"]
+        prepared_runs = load_preprocessed_bold_for_fc(
+            subject,
+            task,
+            session=session,
+            space=space,
+            clean_surf=config["clean_surf"],
+            mask_suffix=config["mask_suffix"],
+            mask_fwhm=config["mask_fwhm"],
+            target_affine=config["target_affine"],
+            confounds_regex=config["confounds_regex"],
+            fd_threshold=config["fd_threshold"],
+            volume_fwhm=config["volume_fwhm"],
+            surface_fwhm=config["surface_fwhm"],
+            standardize=config["standardize"],
+            detrend=config["detrend"],
+            regress_out_task=config["regress_out_task"],
+            regress_task_conditions=config["regress_task_conditions"],
+            low_pass=config["low_pass"],
+            high_pass=config["high_pass"],
+            create_if_missing=True,
         )
-        cleaned_imgs = []
-        cleaned_run_labels = []
-        cleaned_session_labels = []
-        for record in run_records:
-            cleaned_img = FunctionalConnectivityEstimator._clean_run(record, config)
-            if cleaned_img is None:
-                continue
-            cleaned_imgs.append(cleaned_img)
-            cleaned_run_labels.append(record["run_label"])
-            cleaned_session_labels.append(record["session_label"])
 
-        if len(cleaned_imgs) == 0:
+        selected_runs = FunctionalConnectivityEstimator._select_preprocessed_runs(
+            prepared_runs,
+            config["task_conditions"],
+            config["min_T"],
+        )
+        if len(selected_runs) == 0:
             raise ValueError(
                 f"No usable preprocessed runs found for subject {subject} and task {task}."
             )
+
+        cleaned_imgs = [prepared["cleaned_img"] for prepared in selected_runs]
+        cleaned_run_labels = [prepared["run_label"] for prepared in selected_runs]
+        cleaned_session_labels = [
+            prepared["session_label"] for prepared in selected_runs
+        ]
         return cleaned_imgs, cleaned_run_labels, cleaned_session_labels
+
+    @staticmethod
+    def _select_preprocessed_runs(
+        prepared_runs: List[Dict],
+        task_conditions: Optional[List[str]],
+        min_T: int,
+    ) -> List[Dict]:
+        selected_runs = []
+        total_selected_timepoints = 0
+        for prepared in prepared_runs:
+            cleaned_img = prepared["cleaned_img"]
+            n_timepoints = _get_img_n_timepoints(cleaned_img)
+            if task_conditions is None:
+                if n_timepoints < min_T:
+                    source_name = prepared.get(
+                        "func_file",
+                        prepared.get("func_files", {}).get("L"),
+                    )
+                    if source_name is not None:
+                        warnings.warn(
+                            f"Skipping {Path(source_name).name}: insufficient "
+                            "timepoints."
+                        )
+                    continue
+                selected_runs.append(prepared)
+                continue
+
+            selected_frames = FunctionalConnectivityEstimator._select_task_condition_frames(
+                prepared,
+                n_timepoints,
+                task_conditions,
+            )
+            if selected_frames is None or not np.any(selected_frames):
+                continue
+
+            selected_img = _subset_cleaned_img(cleaned_img, selected_frames)
+            selected_runs.append(
+                {
+                    **prepared,
+                    "cleaned_img": selected_img,
+                }
+            )
+            total_selected_timepoints += int(np.sum(selected_frames))
+
+        if task_conditions is not None and total_selected_timepoints < min_T:
+            warnings.warn(
+                "Skipping subject because the concatenated selected task "
+                f"conditions yielded only {total_selected_timepoints} "
+                f"timepoints, fewer than min_T={min_T}."
+            )
+            return []
+        return selected_runs
 
     @staticmethod
     def _find_preprocessed_runs(
@@ -847,15 +1241,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 f"Skipping {record['func_file'].name}: insufficient timepoints."
             )
             return None
-        selected_frames = (
-            FunctionalConnectivityEstimator._select_task_condition_frames(
-                record,
-                func_img.shape[3],
-                config["task_conditions"],
-            )
-        )
-        if config["task_conditions"] is not None and selected_frames is None:
-            return None
         if config["target_affine"] is not None:
             func_img = image.resample_to_img(
                 func_img, mask_img, copy_header=True, force_resample=True
@@ -872,14 +1257,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         )
         masker.fit()
         cleaned_data = masker.transform(func_img, confounds=confounds)
-        if selected_frames is not None:
-            cleaned_data = cleaned_data[selected_frames]
-            if cleaned_data.shape[0] < config["min_T"]:
-                warnings.warn(
-                    f"Skipping {record['func_file'].name}: insufficient "
-                    "timepoints after selecting task conditions."
-                )
-                return None
         return masker.inverse_transform(cleaned_data)
 
     @staticmethod
@@ -924,7 +1301,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         func_img = load_surface_image(record["func_files"], record["mesh_paths"])
         cleaned_parts = {}
         n_timepoints = None
-        selected_frames = None
         for hemi in SURFACE_HEMIS:
             part_name = SURFACE_PARTS[hemi]
             hemi_data = np.asarray(
@@ -943,19 +1319,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "Skipping surface run: insufficient timepoints."
                 )
                 return None
-            if selected_frames is None:
-                selected_frames = (
-                    FunctionalConnectivityEstimator._select_task_condition_frames(
-                        record,
-                        n_timepoints,
-                        config["task_conditions"],
-                    )
-                )
-                if (
-                    config["task_conditions"] is not None
-                    and selected_frames is None
-                ):
-                    return None
 
             hemi_data = _smooth_surface_array(
                 hemi_data,
@@ -971,14 +1334,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 high_pass=config["high_pass"],
                 t_r=record["TR"],
             )
-            if selected_frames is not None:
-                cleaned = cleaned[selected_frames]
-                if cleaned.shape[0] < config["min_T"]:
-                    warnings.warn(
-                        "Skipping surface run: insufficient timepoints after "
-                        "selecting task conditions."
-                    )
-                    return None
             cleaned_parts[part_name] = cleaned.T.astype(np.float32)
 
         return SurfaceImage(

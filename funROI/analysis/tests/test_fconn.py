@@ -210,6 +210,91 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
     assert captured["regress_task_conditions"] == ["story"]
 
 
+def test_preprocess_and_load_preprocessed_bold_for_fc_uses_cache(
+    monkeypatch, tmp_path
+):
+    preproc_root = tmp_path / "preproc"
+    deriv_root = tmp_path / "derivatives"
+    func_dir = preproc_root / "sub-S1" / "func"
+    func_dir.mkdir(parents=True)
+
+    func_file = (
+        func_dir
+        / "sub-S1_task-LANGUAGE_run-1_space-MNINonLinear_desc-preproc_bold.nii.gz"
+    )
+    func_file.write_bytes(b"")
+    confounds_file = (
+        func_dir / "sub-S1_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+    )
+    confounds_file.write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+    mask_file = (
+        func_dir
+        / "sub-S1_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+    )
+    mask_file.write_bytes(b"")
+
+    record = {
+        "func_file": func_file,
+        "confounds_file": confounds_file,
+        "events_file": None,
+        "mask_file": mask_file,
+        "TR": 1.0,
+        "StartTime": 0.0,
+        "sidecar": {"RepetitionTime": 1.0},
+        "run_label": "01",
+        "session_label": None,
+    }
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: preproc_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_deriv_folder",
+        lambda: deriv_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_find_preprocessed_runs",
+        staticmethod(lambda *args, **kwargs: [record]),
+    )
+
+    clean_calls = {"count": 0}
+
+    def fake_clean(record_arg, config_arg):
+        clean_calls["count"] += 1
+        return _bold_img(np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]]))
+
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_clean_run",
+        staticmethod(fake_clean),
+    )
+
+    manifest = fconn_mod.preprocess_bold_for_fc(["S1"], task="LANGUAGE")
+
+    assert manifest.shape[0] == 1
+    assert clean_calls["count"] == 1
+
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_clean_run",
+        staticmethod(
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("cache should be used")
+            )
+        ),
+    )
+
+    prepared = fconn_mod.load_preprocessed_bold_for_fc("S1", task="LANGUAGE")
+
+    assert len(prepared) == 1
+    assert prepared[0]["run_label"] == "01"
+    assert prepared[0]["cleaned_img"].get_fdata().shape[-1] == 3
+
+
 def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp_path):
     events_file = tmp_path / "events.tsv"
     pd.DataFrame(
@@ -361,6 +446,53 @@ def test_select_task_condition_frames_returns_none_when_events_missing(tmp_path)
 
     assert selected is None
     assert any("no events file is available" in str(w.message) for w in caught)
+
+
+def test_select_preprocessed_runs_accumulates_selected_timepoints_across_runs(
+    monkeypatch,
+):
+    prepared_runs = [
+        {
+            "cleaned_img": _bold_img(np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]])),
+            "run_label": "01",
+            "session_label": None,
+            "func_file": Path("run-01.nii.gz"),
+            "events_file": Path("run-01_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+        {
+            "cleaned_img": _bold_img(np.array([[4.0, 5.0], [5.0, 6.0], [6.0, 7.0]])),
+            "run_label": "02",
+            "session_label": None,
+            "func_file": Path("run-02.nii.gz"),
+            "events_file": Path("run-02_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+    ]
+
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_select_task_condition_frames",
+        staticmethod(
+            lambda record, n_timepoints, task_conditions: np.array(
+                [True, True, False]
+            )
+        ),
+    )
+
+    selected_runs = fconn_mod.FunctionalConnectivityEstimator._select_preprocessed_runs(
+        prepared_runs,
+        ["story"],
+        min_T=4,
+    )
+
+    assert len(selected_runs) == 2
+    assert selected_runs[0]["cleaned_img"].get_fdata().shape[-1] == 2
+    assert selected_runs[1]["cleaned_img"].get_fdata().shape[-1] == 2
 
 
 def test_fconn_run_surface_properties():
