@@ -48,6 +48,7 @@ FC_CLEAN_CONFIG = {
 RUN_RE = re.compile(r"_run-([A-Za-z0-9]+)_")
 SPACE_RE = re.compile(r"_space-([A-Za-z0-9]+)_")
 SES_RE = re.compile(r"_ses-([A-Za-z0-9]+)_")
+ENTITY_RE = re.compile(r"(^|_)([A-Za-z0-9]+)-([^_]+)")
 
 
 def _normalize_standardize_arg(standardize):
@@ -56,6 +57,50 @@ def _normalize_standardize_arg(standardize):
     if standardize is False:
         return None
     return standardize
+
+
+def _parse_bids_entities(path: Path) -> Dict[str, str]:
+    stem = path.name
+    for suffix in (".nii.gz", ".func.gii", ".tsv", ".json"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+
+    entities = {}
+    for match in ENTITY_RE.finditer(stem):
+        entities[match.group(2)] = match.group(3)
+    return entities
+
+
+def _find_matching_bids_file(
+    directory: Path,
+    reference_file: Path,
+    suffix: str,
+    *,
+    required_entities: Optional[Tuple[str, ...]] = None,
+) -> Optional[Path]:
+    if required_entities is None:
+        required_entities = ("sub", "ses", "task", "acq", "ce", "dir", "rec", "run")
+
+    reference_entities = _parse_bids_entities(reference_file)
+    reference_entities = {
+        key: reference_entities[key]
+        for key in required_entities
+        if key in reference_entities
+    }
+
+    matches = []
+    for candidate in sorted(directory.glob(f"*{suffix}")):
+        candidate_entities = _parse_bids_entities(candidate)
+        if all(
+            candidate_entities.get(key) == value
+            for key, value in reference_entities.items()
+        ):
+            matches.append(candidate)
+
+    if len(matches) == 0:
+        return None
+    return matches[0]
 
 
 class FunctionalConnectivityEstimator(AnalysisSaver):
@@ -379,12 +424,12 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             )
             run_match = RUN_RE.search(func_file.name)
             run_label = run_match.group(1) if run_match is not None else "01"
-            prefix = re.sub(
-                r"_space-[A-Za-z0-9]+", "", func_file.name
-            ).replace("_desc-preproc_bold.nii.gz", "")
-
-            confounds_file = func_file.parent / f"{prefix}_desc-confounds_timeseries.tsv"
-            if not confounds_file.exists():
+            confounds_file = _find_matching_bids_file(
+                func_file.parent,
+                func_file,
+                "_desc-confounds_timeseries.tsv",
+            )
+            if confounds_file is None or not confounds_file.exists():
                 warnings.warn(
                     f"Confounds file not found for {func_file.name}, skipping."
                 )
@@ -397,8 +442,11 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     events_dir = bids_root / f"sub-{subject}" / "func"
                 else:
                     events_dir = bids_root / f"sub-{subject}" / f"ses-{file_session}" / "func"
-                candidate = events_dir / f"{prefix}_events.tsv"
-                events_file = candidate if candidate.exists() else None
+                events_file = _find_matching_bids_file(
+                    events_dir,
+                    func_file,
+                    "_events.tsv",
+                )
 
             anat_dir = FunctionalConnectivityEstimator._find_anat_dir(
                 preproc_root, subject, file_session
@@ -540,16 +588,12 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             )
             run_match = RUN_RE.search(left_file.name)
             run_label = run_match.group(1) if run_match is not None else "01"
-            prefix = re.sub(
-                r"_hemi-L(?:_space-[A-Za-z0-9]+)?_desc-preproc_bold\.func\.gii$",
-                "",
-                left_file.name,
+            confounds_file = _find_matching_bids_file(
+                left_file.parent,
+                left_file,
+                "_desc-confounds_timeseries.tsv",
             )
-
-            confounds_file = (
-                left_file.parent / f"{prefix}_desc-confounds_timeseries.tsv"
-            )
-            if not confounds_file.exists():
+            if confounds_file is None or not confounds_file.exists():
                 warnings.warn(
                     f"Confounds file not found for {left_file.name}, skipping."
                 )
@@ -567,8 +611,11 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                         / f"ses-{file_session}"
                         / "func"
                     )
-                candidate = events_dir / f"{prefix}_events.tsv"
-                events_file = candidate if candidate.exists() else None
+                events_file = _find_matching_bids_file(
+                    events_dir,
+                    left_file,
+                    "_events.tsv",
+                )
 
             mesh_paths = _find_surface_mesh_paths(
                 preproc_root, subject, file_space
@@ -682,10 +729,24 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         if exact_match.exists():
             return exact_match
 
-        prefix = func_file.name.replace("_desc-preproc_bold.nii.gz", "")
-        candidates = sorted(func_file.parent.glob(f"{prefix}*_bold.json"))
-        if len(candidates) != 0:
-            return candidates[0]
+        candidate = _find_matching_bids_file(
+            func_file.parent,
+            func_file,
+            "_bold.json",
+            required_entities=(
+                "sub",
+                "ses",
+                "task",
+                "acq",
+                "ce",
+                "dir",
+                "rec",
+                "run",
+                "space",
+            ),
+        )
+        if candidate is not None:
+            return candidate
 
         return exact_match
 

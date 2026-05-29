@@ -346,6 +346,80 @@ def test_find_preprocessed_runs_falls_back_to_functional_mask(monkeypatch, tmp_p
     assert any("using functional mask" in str(w.message) for w in caught)
 
 
+def test_find_preprocessed_runs_matches_confounds_without_space_or_res_entities(
+    monkeypatch, tmp_path
+):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+    session_label = "01"
+    func_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "func"
+    anat_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "anat"
+    func_dir.mkdir(parents=True)
+    anat_dir.mkdir(parents=True)
+
+    func_file = (
+        func_dir
+        / (
+            f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+            "space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz"
+        )
+    )
+    func_file.write_bytes(b"")
+    confounds_file = (
+        func_dir
+        / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+    )
+    confounds_file.write_text(
+        "framewise_displacement\n0.0\n",
+        encoding="utf-8",
+    )
+    events_file = (
+        func_dir
+        / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_events.tsv"
+    )
+    events_file.write_text(
+        "onset\tduration\ttrial_type\n0\t1\tstory\n",
+        encoding="utf-8",
+    )
+    (
+        func_dir
+        / (
+            f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+            "space-MNI152NLin2009cAsym_bold.json"
+        )
+    ).write_text(json.dumps({"RepetitionTime": 0.72}), encoding="utf-8")
+    (
+        func_dir
+        / (
+            f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+            "space-MNI152NLin2009cAsym_res-2_desc-brain_mask.nii.gz"
+        )
+    ).write_bytes(b"")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+
+    run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
+        subject=subject,
+        task="LANGUAGE",
+        session=session_label,
+        space="MNI152NLin2009cAsym",
+        mask_suffix="_desc-brain_mask.nii.gz",
+    )
+
+    assert len(run_records) == 1
+    assert run_records[0]["confounds_file"] == confounds_file
+    assert run_records[0]["events_file"] == events_file
+
+
 def test_find_preprocessed_runs_uses_all_sessions_when_session_none(
     monkeypatch, tmp_path
 ):
