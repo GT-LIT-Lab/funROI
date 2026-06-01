@@ -450,7 +450,42 @@ def test_select_task_condition_frames_returns_none_when_events_missing(tmp_path)
     assert any("no events file is available" in str(w.message) for w in caught)
 
 
-def test_select_preprocessed_runs_applies_min_t_per_run_without_concatenation(
+def test_filter_preprocessed_runs_applies_min_t_to_full_runs(
+    monkeypatch,
+):
+    prepared_runs = [
+        {
+            "cleaned_img": _bold_img(np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]])),
+            "run_label": "01",
+            "session_label": None,
+            "func_file": Path("run-01.nii.gz"),
+            "events_file": Path("run-01_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+        {
+            "cleaned_img": _bold_img(np.array([[4.0, 5.0, 6.0]])),
+            "run_label": "02",
+            "session_label": None,
+            "func_file": Path("run-02.nii.gz"),
+            "events_file": Path("run-02_events.tsv"),
+            "sidecar": {"SliceTimingCorrected": False},
+            "TR": 1.0,
+            "StartTime": 0.0,
+        },
+    ]
+
+    selected_runs = fconn_mod.FunctionalConnectivityEstimator._filter_preprocessed_runs_by_min_t(
+        prepared_runs,
+        min_T=2,
+    )
+
+    assert len(selected_runs) == 1
+    assert selected_runs[0]["run_label"] == "01"
+
+
+def test_select_preprocessed_runs_does_not_reapply_min_t_after_condition_selection(
     monkeypatch,
 ):
     prepared_runs = [
@@ -489,7 +524,6 @@ def test_select_preprocessed_runs_applies_min_t_per_run_without_concatenation(
     selected_runs = fconn_mod.FunctionalConnectivityEstimator._select_preprocessed_runs(
         prepared_runs,
         ["story"],
-        min_T=2,
         concat_conditions_across_runs=False,
     )
 
@@ -535,7 +569,6 @@ def test_select_preprocessed_runs_can_concatenate_across_runs(monkeypatch):
     selected_runs = fconn_mod.FunctionalConnectivityEstimator._select_preprocessed_runs(
         prepared_runs,
         ["story"],
-        min_T=4,
         concat_conditions_across_runs=True,
     )
 

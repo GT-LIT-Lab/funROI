@@ -33,7 +33,9 @@ from .utils import AnalysisSaver
 FC_CLEAN_CONFIG = {
     "clean_surf": False,
     "mask_suffix": "_desc-brain_mask.nii.gz",
-    "mask_fwhm": 2,
+    # Match the CLiMB-style postfprep volume cleaner, which does not smooth the
+    # mask in its active code path.
+    "mask_fwhm": None,
     "target_affine": None,
     "confounds_regex": (
         r"^(global_signal|framewise_displacement|trans_[xyz]|rot_[xyz]|"
@@ -72,7 +74,6 @@ FC_PREPROC_CONFIG_KEYS = (
     "detrend",
     "regress_out_task",
     "regress_task_conditions",
-    "concat_conditions_across_runs",
     "low_pass",
     "high_pass",
 )
@@ -84,6 +85,20 @@ def _normalize_standardize_arg(standardize):
     if standardize is False:
         return None
     return standardize
+
+
+def _masker_fit_transform_with_explicit_mask(masker, func_img, confounds):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=(
+                r"\[NiftiMasker\.fit\] Generation of a mask has been requested "
+                r"\(imgs != None\) while a mask was given at masker creation\. "
+                r"Given mask will be used\."
+            ),
+            category=UserWarning,
+        )
+        return masker.fit_transform(func_img, confounds=confounds)
 
 
 def _normalize_task_conditions(
@@ -330,6 +345,7 @@ def preprocess_bold_for_fc(
     ] = None,
     low_pass: Optional[float] = FC_CLEAN_CONFIG["low_pass"],
     high_pass: Optional[float] = FC_CLEAN_CONFIG["high_pass"],
+    min_T: int = FC_CLEAN_CONFIG["min_T"],
     overwrite: bool = False,
 ) -> pd.DataFrame:
     if isinstance(subjects, str):
@@ -353,7 +369,7 @@ def preprocess_bold_for_fc(
         "task_conditions": None,
         "low_pass": low_pass,
         "high_pass": high_pass,
-        "min_T": 1,
+        "min_T": min_T,
     }
     preproc_config = _build_fc_preproc_config(clean_config)
 
@@ -378,6 +394,7 @@ def preprocess_bold_for_fc(
             regress_task_conditions=regress_task_conditions,
             low_pass=low_pass,
             high_pass=high_pass,
+            min_T=min_T,
             create_if_missing=True,
             overwrite=overwrite,
         )
@@ -421,6 +438,7 @@ def load_preprocessed_bold_for_fc(
     ] = None,
     low_pass: Optional[float] = FC_CLEAN_CONFIG["low_pass"],
     high_pass: Optional[float] = FC_CLEAN_CONFIG["high_pass"],
+    min_T: int = FC_CLEAN_CONFIG["min_T"],
     create_if_missing: bool = False,
     overwrite: bool = False,
 ) -> List[Dict]:
@@ -442,7 +460,7 @@ def load_preprocessed_bold_for_fc(
         "task_conditions": None,
         "low_pass": low_pass,
         "high_pass": high_pass,
-        "min_T": 1,
+        "min_T": min_T,
     }
     preproc_config = _build_fc_preproc_config(clean_config)
 
@@ -508,8 +526,8 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         session: Optional[str] = None,
         space: Optional[str] = None,
         clean_surf: bool = False,
-        mask_suffix: str = "_desc-brain_mask.nii.gz",
-        mask_fwhm: Optional[float] = 2,
+        mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
+        mask_fwhm: Optional[float] = FC_CLEAN_CONFIG["mask_fwhm"],
         target_affine: Optional[List[List[float]]] = None,
         confounds_regex: str = FC_CLEAN_CONFIG["confounds_regex"],
         fd_threshold: Optional[float] = 0.5,
@@ -722,16 +740,26 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             regress_task_conditions=config["regress_task_conditions"],
             low_pass=config["low_pass"],
             high_pass=config["high_pass"],
+            min_T=config["min_T"],
             create_if_missing=True,
+        )
+        prepared_runs = FunctionalConnectivityEstimator._filter_preprocessed_runs_by_min_t(
+            prepared_runs,
+            config["min_T"],
         )
 
         selected_runs = FunctionalConnectivityEstimator._select_preprocessed_runs(
             prepared_runs,
             config["task_conditions"],
-            config["min_T"],
             config["concat_conditions_across_runs"],
         )
         if len(selected_runs) == 0:
+            if config["task_conditions"] is not None:
+                raise ValueError(
+                    "No usable runs remained for subject "
+                    f"{subject} and task {task} after selecting task_conditions "
+                    f"{config['task_conditions']}."
+                )
             raise ValueError(
                 f"No usable preprocessed runs found for subject {subject} and task {task}."
             )
@@ -747,29 +775,15 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
     def _select_preprocessed_runs(
         prepared_runs: List[Dict],
         task_conditions: Optional[List[str]],
-        min_T: int,
         concat_conditions_across_runs: bool,
     ) -> List[Dict]:
+        if task_conditions is None:
+            return prepared_runs
+
         selected_runs = []
-        total_selected_timepoints = 0
         for prepared in prepared_runs:
             cleaned_img = prepared["cleaned_img"]
             n_timepoints = _get_img_n_timepoints(cleaned_img)
-            if task_conditions is None:
-                if n_timepoints < min_T:
-                    source_name = prepared.get(
-                        "func_file",
-                        prepared.get("func_files", {}).get("L"),
-                    )
-                    if source_name is not None:
-                        warnings.warn(
-                            f"Skipping {Path(source_name).name}: insufficient "
-                            "timepoints."
-                        )
-                    continue
-                selected_runs.append(prepared)
-                continue
-
             selected_frames = FunctionalConnectivityEstimator._select_task_condition_frames(
                 prepared,
                 n_timepoints,
@@ -785,39 +799,34 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "cleaned_img": selected_img,
                 }
             )
-            total_selected_timepoints += int(np.sum(selected_frames))
 
-        if task_conditions is not None and concat_conditions_across_runs:
-            if total_selected_timepoints < min_T:
-                warnings.warn(
-                    "Skipping subject because the concatenated selected task "
-                    f"conditions yielded only {total_selected_timepoints} "
-                    f"timepoints, fewer than min_T={min_T}."
-                )
-                return []
+        if concat_conditions_across_runs:
             if len(selected_runs) == 0:
                 return []
             return [FunctionalConnectivityEstimator._concatenate_prepared_runs(selected_runs)]
 
-        if task_conditions is not None and not concat_conditions_across_runs:
-            filtered_runs = []
-            for prepared in selected_runs:
-                n_timepoints = _get_img_n_timepoints(prepared["cleaned_img"])
-                if n_timepoints < min_T:
-                    source_name = prepared.get(
-                        "func_file",
-                        prepared.get("func_files", {}).get("L"),
-                    )
-                    if source_name is not None:
-                        warnings.warn(
-                            f"Skipping {Path(source_name).name}: insufficient "
-                            "timepoints after selecting task conditions."
-                        )
-                    continue
-                filtered_runs.append(prepared)
-            return filtered_runs
-
         return selected_runs
+
+    @staticmethod
+    def _filter_preprocessed_runs_by_min_t(
+        prepared_runs: List[Dict],
+        min_T: int,
+    ) -> List[Dict]:
+        filtered_runs = []
+        for prepared in prepared_runs:
+            n_timepoints = _get_img_n_timepoints(prepared["cleaned_img"])
+            if n_timepoints < min_T:
+                source_name = prepared.get(
+                    "func_file",
+                    prepared.get("func_files", {}).get("L"),
+                )
+                if source_name is not None:
+                    warnings.warn(
+                        f"Skipping {Path(source_name).name}: insufficient timepoints."
+                    )
+                continue
+            filtered_runs.append(prepared)
+        return filtered_runs
 
     @staticmethod
     def _concatenate_prepared_runs(prepared_runs: List[Dict]) -> Dict:
@@ -1327,8 +1336,11 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
             low_pass=config["low_pass"],
             high_pass=config["high_pass"],
         )
-        masker.fit()
-        cleaned_data = masker.transform(func_img, confounds=confounds)
+        cleaned_data = _masker_fit_transform_with_explicit_mask(
+            masker,
+            func_img,
+            confounds,
+        )
         return masker.inverse_transform(cleaned_data)
 
     @staticmethod
