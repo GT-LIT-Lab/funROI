@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from nilearn import glm, image, maskers, signal
 from nilearn.image import load_img
+from nilearn.interfaces.bids.query import get_bids_files
 from nilearn.surface import SurfaceImage
 
 from .._surface import (
@@ -19,6 +20,7 @@ from .._surface import (
     load_surface_image,
     save_surface_image,
 )
+from ..contrast import _get_run_group_info
 from ..first_level.nilearn import _find_surface_mesh_paths, _smooth_surface_array
 from ..froi import FROIConfig, _get_froi_data
 from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
@@ -109,6 +111,29 @@ def _normalize_task_conditions(
     if isinstance(task_conditions, str):
         return [task_conditions]
     return list(task_conditions)
+
+
+def _normalize_run_filter_token(run_filter_token) -> str:
+    run_filter_str = str(run_filter_token)
+    if run_filter_str.isdigit():
+        return f"{int(run_filter_str):02d}"
+
+    run_filter_lower = run_filter_str.lower()
+    if run_filter_lower in {"all", "odd", "even"}:
+        return run_filter_lower
+    if run_filter_lower.startswith("orth") and run_filter_lower[4:].isdigit():
+        return f"orth{int(run_filter_lower[4:]):02d}"
+    return run_filter_str
+
+
+def _normalize_run_filter(
+    run_filter: Optional[Union[str, int, List[Union[str, int]], Tuple[Union[str, int], ...]]]
+):
+    if run_filter is None:
+        return None
+    if isinstance(run_filter, (list, tuple, set)):
+        return [_normalize_run_filter_token(run_i) for run_i in run_filter]
+    return _normalize_run_filter_token(run_filter)
 
 
 def _frame_times_from_sidecar(
@@ -205,6 +230,17 @@ def _get_fc_preproc_root() -> Path:
     return get_bids_deriv_folder() / FC_PREPROC_DERIV_NAME
 
 
+def _with_global_run_label(filename: str, run_label: str) -> str:
+    if RUN_RE.search(filename) is not None:
+        return RUN_RE.sub(f"_run-{run_label}_", filename, count=1)
+
+    if "_desc-" in filename:
+        return filename.replace("_desc-", f"_run-{run_label}_desc-", 1)
+    if "_bold" in filename:
+        return filename.replace("_bold", f"_run-{run_label}_bold", 1)
+    return filename
+
+
 def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str, Path]:
     config_hash = _fc_preproc_config_hash(preproc_config)
     if "func_file" in record:
@@ -217,7 +253,8 @@ def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if "func_file" in record:
-        output_name = source_file.name.replace(
+        output_name = _with_global_run_label(source_file.name, record["run_label"])
+        output_name = output_name.replace(
             "_desc-preproc_bold.nii.gz",
             f"_desc-fcpreproc-{config_hash}_bold.nii.gz",
         )
@@ -227,7 +264,8 @@ def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str
 
     paths = {}
     for hemi, source_path in record["func_files"].items():
-        output_name = source_path.name.replace(
+        output_name = _with_global_run_label(source_path.name, record["run_label"])
+        output_name = output_name.replace(
             "_desc-preproc_bold.func.gii",
             f"_desc-fcpreproc-{config_hash}_bold.func.gii",
         )
@@ -298,6 +336,7 @@ def _save_cached_preprocessed_run(cleaned_img, record: Dict, preproc_config: Dic
         "confounds_file": _make_json_serializable(record["confounds_file"]),
         "events_file": _make_json_serializable(record["events_file"]),
         "run_label": record["run_label"],
+        "bids_run_label": record.get("bids_run_label"),
         "session_label": record["session_label"],
         "TR": record["TR"],
         "StartTime": record["StartTime"],
@@ -327,7 +366,9 @@ def preprocess_bold_for_fc(
     subjects: Union[str, List[str]],
     task: str,
     *,
-    session: Optional[str] = None,
+    run_filter: Optional[
+        Union[str, int, List[Union[str, int]], Tuple[Union[str, int], ...]]
+    ] = None,
     space: Optional[str] = None,
     clean_surf: bool = False,
     mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
@@ -378,7 +419,7 @@ def preprocess_bold_for_fc(
         prepared_runs = load_preprocessed_bold_for_fc(
             subject,
             task,
-            session=session,
+            run_filter=run_filter,
             space=space,
             clean_surf=clean_surf,
             mask_suffix=mask_suffix,
@@ -403,6 +444,7 @@ def preprocess_bold_for_fc(
                 "subject": subject,
                 "task": task,
                 "run_label": prepared["run_label"],
+                "bids_run_label": prepared.get("bids_run_label"),
                 "session_label": prepared["session_label"],
                 "config_hash": _fc_preproc_config_hash(preproc_config),
             }
@@ -420,7 +462,9 @@ def load_preprocessed_bold_for_fc(
     subject: str,
     task: str,
     *,
-    session: Optional[str] = None,
+    run_filter: Optional[
+        Union[str, int, List[Union[str, int]], Tuple[Union[str, int], ...]]
+    ] = None,
     space: Optional[str] = None,
     clean_surf: bool = False,
     mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
@@ -466,11 +510,11 @@ def load_preprocessed_bold_for_fc(
 
     if clean_surf:
         run_records = FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
-            subject, task, session, space
+            subject, task, run_filter, space
         )
     else:
         run_records = FunctionalConnectivityEstimator._find_preprocessed_runs(
-            subject, task, session, space, mask_suffix
+            subject, task, run_filter, space, mask_suffix
         )
 
     prepared_runs = []
@@ -523,7 +567,9 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         task: Optional[str] = None,
         froi1_run_label: Optional[str] = None,
         froi2_run_label: Optional[str] = None,
-        session: Optional[str] = None,
+        run_filter: Optional[
+            Union[str, int, List[Union[str, int]], Tuple[Union[str, int], ...]]
+        ] = None,
         space: Optional[str] = None,
         clean_surf: bool = False,
         mask_suffix: str = FC_CLEAN_CONFIG["mask_suffix"],
@@ -603,7 +649,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 cleaned_run_labels,
                 cleaned_session_labels,
             ) = self._get_cleaned_imgs_by_run(
-                subject, task, session, space, subject_clean_config
+                subject, task, run_filter, space, subject_clean_config
             )
             df_summary, df_detail = self._run(cleaned_imgs, froi1_img, froi2_img)
 
@@ -654,7 +700,7 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         new_info = pd.DataFrame(
             {
                 "task": [task],
-                "session": [session],
+                "run_filter": [run_filter],
                 "space": [space],
                 "froi1": [self.froi1],
                 "froi2": [self.froi2],
@@ -717,14 +763,14 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
     def _get_cleaned_imgs_by_run(
         subject: str,
         task: str,
-        session: Optional[str],
+        run_filter,
         space: Optional[str],
         config: Dict,
     ) -> Tuple[List, List[str], List[Optional[str]]]:
         prepared_runs = load_preprocessed_bold_for_fc(
             subject,
             task,
-            session=session,
+            run_filter=run_filter,
             space=space,
             clean_surf=config["clean_surf"],
             mask_suffix=config["mask_suffix"],
@@ -872,10 +918,114 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         }
 
     @staticmethod
+    def _resolve_run_filter_labels(
+        subject: str,
+        task: str,
+        available_run_labels: List[str],
+        run_filter,
+    ) -> List[str]:
+        normalized_run_filter = _normalize_run_filter(run_filter)
+        if normalized_run_filter is None or normalized_run_filter == "all":
+            return available_run_labels
+
+        if isinstance(normalized_run_filter, list):
+            requested_labels = set(normalized_run_filter)
+            return [
+                run_label
+                for run_label in available_run_labels
+                if run_label in requested_labels
+            ]
+
+        if normalized_run_filter == "odd":
+            return [
+                run_label
+                for run_label in available_run_labels
+                if run_label.isdigit() and int(run_label) % 2 == 1
+            ]
+        if normalized_run_filter == "even":
+            return [
+                run_label
+                for run_label in available_run_labels
+                if run_label.isdigit() and int(run_label) % 2 == 0
+            ]
+        if (
+            isinstance(normalized_run_filter, str)
+            and normalized_run_filter.startswith("orth")
+        ):
+            excluded_run = normalized_run_filter[4:]
+            return [
+                run_label
+                for run_label in available_run_labels
+                if run_label != excluded_run
+            ]
+
+        if (
+            isinstance(normalized_run_filter, str)
+            and not normalized_run_filter.isdigit()
+        ):
+            try:
+                run_groups = _get_run_group_info(subject, task)
+            except RuntimeError:
+                run_groups = {}
+            if normalized_run_filter in run_groups:
+                requested_labels = {
+                    _normalize_run_filter_token(run_i)
+                    for run_i in run_groups[normalized_run_filter]
+                }
+                return [
+                    run_label
+                    for run_label in available_run_labels
+                    if run_label in requested_labels
+                ]
+
+        return [
+            run_label
+            for run_label in available_run_labels
+            if run_label == normalized_run_filter
+        ]
+
+    @staticmethod
+    def _finalize_run_records(
+        subject: str,
+        task: str,
+        run_records: List[Dict],
+        run_filter,
+        missing_label: str,
+    ) -> List[Dict]:
+        for run_i, record in enumerate(run_records, start=1):
+            record["run_label"] = f"{run_i:02d}"
+
+        available_run_labels = [record["run_label"] for record in run_records]
+        selected_run_labels = set(
+            FunctionalConnectivityEstimator._resolve_run_filter_labels(
+                subject,
+                task,
+                available_run_labels,
+                run_filter,
+            )
+        )
+        run_records = [
+            record
+            for record in run_records
+            if record["run_label"] in selected_run_labels
+        ]
+        if len(run_records) == 0:
+            normalized_run_filter = _normalize_run_filter(run_filter)
+            if normalized_run_filter is None:
+                raise ValueError(
+                    f"No {missing_label} runs found for subject {subject} and task {task}."
+                )
+            raise ValueError(
+                f"No {missing_label} runs found for subject {subject}, task {task}, "
+                f"and run_filter {normalized_run_filter}."
+            )
+        return run_records
+
+    @staticmethod
     def _find_preprocessed_runs(
         subject: str,
         task: str,
-        session: Optional[str],
+        run_filter,
         space: Optional[str],
         mask_suffix: str,
     ) -> List[Dict]:
@@ -886,22 +1036,22 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         except RuntimeError:
             pass
 
-        subject_dir = preproc_root / f"sub-{subject}"
-        func_dirs = FunctionalConnectivityEstimator._get_subject_func_dirs(
-            subject_dir, session
-        )
+        filters = [("task", task)]
+        if space is not None:
+            filters.append(("space", space))
 
-        func_files = []
-        missing_dirs = []
-        for func_dir, _ in func_dirs:
-            if not func_dir.exists():
-                missing_dirs.append(func_dir)
-                continue
-            func_files.extend(
-                sorted(func_dir.glob(f"*task-{task}_*desc-preproc_bold.nii.gz"))
+        func_files = [
+            Path(path)
+            for path in get_bids_files(
+                main_path=preproc_root,
+                modality_folder="func",
+                file_tag="bold",
+                file_type="nii*",
+                sub_label=subject,
+                filters=filters,
             )
-        if len(func_files) == 0 and len(missing_dirs) == len(func_dirs):
-            raise ValueError(f"Functional directory not found: {missing_dirs[0]}")
+            if path.endswith("desc-preproc_bold.nii.gz")
+        ]
         if len(func_files) == 0:
             raise ValueError(
                 f"No preprocessed BOLD runs found for subject {subject} and task {task}."
@@ -934,7 +1084,9 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 session_match.group(1) if session_match is not None else None
             )
             run_match = RUN_RE.search(func_file.name)
-            run_label = run_match.group(1) if run_match is not None else "01"
+            bids_run_label = (
+                run_match.group(1) if run_match is not None else None
+            )
             confounds_file = _find_matching_bids_file(
                 func_file.parent,
                 func_file,
@@ -1009,18 +1161,24 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "TR": TR,
                     "StartTime": sidecar.get("StartTime", 0),
                     "sidecar": sidecar,
-                    "run_label": run_label,
+                    "bids_run_label": bids_run_label,
                     "session_label": file_session,
                 }
             )
 
-        return run_records
+        return FunctionalConnectivityEstimator._finalize_run_records(
+            subject,
+            task,
+            run_records,
+            run_filter,
+            "preprocessed BOLD",
+        )
 
     @staticmethod
     def _find_preprocessed_surface_runs(
         subject: str,
         task: str,
-        session: Optional[str],
+        run_filter,
         space: Optional[str],
     ) -> List[Dict]:
         preproc_root = get_bids_preprocessed_folder()
@@ -1030,26 +1188,24 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
         except RuntimeError:
             pass
 
-        subject_dir = preproc_root / f"sub-{subject}"
-        func_dirs = FunctionalConnectivityEstimator._get_subject_func_dirs(
-            subject_dir, session
-        )
-
-        func_files = []
-        missing_dirs = []
-        for func_dir, _ in func_dirs:
-            if not func_dir.exists():
-                missing_dirs.append(func_dir)
-                continue
-            func_files.extend(
-                sorted(
-                    func_dir.glob(
-                        f"*task-{task}_*hemi-L*_desc-preproc_bold.func.gii"
-                    )
-                )
+        if space is None:
+            raise ValueError(
+                "Surface functional connectivity requires an explicit `space`."
             )
-        if len(func_files) == 0 and len(missing_dirs) == len(func_dirs):
-            raise ValueError(f"Functional directory not found: {missing_dirs[0]}")
+
+        filters = [("task", task), ("space", space), ("hemi", "L")]
+        func_files = [
+            Path(path)
+            for path in get_bids_files(
+                main_path=preproc_root,
+                modality_folder="func",
+                file_tag="bold",
+                file_type="func.gii",
+                sub_label=subject,
+                filters=filters,
+            )
+            if path.endswith("desc-preproc_bold.func.gii")
+        ]
         if len(func_files) == 0:
             raise ValueError(
                 f"No surface preprocessed BOLD runs found for subject {subject} and task {task}."
@@ -1063,11 +1219,6 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 if match is not None
             }
         )
-        if space is None and len(spaces_found) > 1:
-            raise ValueError(
-                "Multiple spaces were found for the requested task. Please specify `space`."
-            )
-
         run_records = []
         for left_file in func_files:
             file_space_match = SPACE_RE.search(left_file.name)
@@ -1098,7 +1249,9 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                 else None
             )
             run_match = RUN_RE.search(left_file.name)
-            run_label = run_match.group(1) if run_match is not None else "01"
+            bids_run_label = (
+                run_match.group(1) if run_match is not None else None
+            )
             confounds_file = _find_matching_bids_file(
                 left_file.parent,
                 left_file,
@@ -1161,34 +1314,19 @@ class FunctionalConnectivityEstimator(AnalysisSaver):
                     "TR": TR,
                     "StartTime": sidecar.get("StartTime", 0),
                     "sidecar": sidecar,
-                    "run_label": run_label,
+                    "bids_run_label": bids_run_label,
                     "session_label": file_session,
                 }
             )
 
-        return run_records
+        return FunctionalConnectivityEstimator._finalize_run_records(
+            subject,
+            task,
+            run_records,
+            run_filter,
+            "surface preprocessed BOLD",
+        )
 
-    @staticmethod
-    def _get_subject_func_dirs(
-        subject_dir: Path, session: Optional[str]
-    ) -> List[Tuple[Path, Optional[str]]]:
-        if session is not None:
-            return [(subject_dir / f"ses-{session}" / "func", session)]
-
-        func_dirs = []
-        root_func_dir = subject_dir / "func"
-        if root_func_dir.exists():
-            func_dirs.append((root_func_dir, None))
-
-        for session_dir in sorted(subject_dir.glob("ses-*")):
-            session_label = session_dir.name.replace("ses-", "", 1)
-            func_dirs.append((session_dir / "func", session_label))
-
-        if len(func_dirs) == 0:
-            func_dirs.append((root_func_dir, None))
-        return func_dirs
-
-    @staticmethod
     def _find_anat_dir(
         preproc_root: Path, subject: str, session: Optional[str]
     ) -> Path:

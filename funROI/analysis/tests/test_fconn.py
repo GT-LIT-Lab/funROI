@@ -116,7 +116,7 @@ def test_fconn_run_parcels_and_froi(monkeypatch):
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
         "_get_cleaned_imgs_by_run",
-        staticmethod(lambda subject, task, session, space, config: (
+        staticmethod(lambda subject, task, run_filter, space, config: (
             [_bold_img(np.array([[1.0, 2.0, 10.0, 20.0], [2.0, 3.0, 20.0, 30.0]]))],
             ["01"],
             ["A"],
@@ -158,7 +158,7 @@ def test_fconn_run_omits_froi_column_when_parcelless(monkeypatch):
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
         "_get_cleaned_imgs_by_run",
-        staticmethod(lambda subject, task, session, space, config: (
+        staticmethod(lambda subject, task, run_filter, space, config: (
             [_bold_img(np.array([[1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 4.0, 5.0]]))],
             ["01"],
             [None],
@@ -184,7 +184,7 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
 
     captured = {}
 
-    def fake_get_cleaned(subject, task, session, space, config):
+    def fake_get_cleaned(subject, task, run_filter, space, config):
         captured.update(config)
         return ([_bold_img(np.array([[1.0, 2.0], [2.0, 3.0]]))], ["01"], [None])
 
@@ -279,6 +279,8 @@ def test_preprocess_and_load_preprocessed_bold_for_fc_uses_cache(
 
     assert manifest.shape[0] == 1
     assert clean_calls["count"] == 1
+    assert "_run-01_" in manifest["cache_img"].iloc[0]
+    assert "_run-1_" not in manifest["cache_img"].iloc[0]
 
     monkeypatch.setattr(
         fconn_mod.FunctionalConnectivityEstimator,
@@ -669,7 +671,7 @@ def test_find_preprocessed_runs_falls_back_to_functional_mask(monkeypatch, tmp_p
         run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
             subject=subject,
             task="LANGUAGE",
-            session=None,
+            run_filter=None,
             space="MNINonLinear",
             mask_suffix="_desc-brain_mask.nii.gz",
         )
@@ -677,6 +679,7 @@ def test_find_preprocessed_runs_falls_back_to_functional_mask(monkeypatch, tmp_p
     assert len(run_records) == 1
     assert run_records[0]["mask_file"] == func_mask
     assert run_records[0]["sidecar"] == {"RepetitionTime": 0.72}
+    assert run_records[0]["run_label"] == "01"
     assert any("using functional mask" in str(w.message) for w in caught)
 
 
@@ -744,7 +747,7 @@ def test_find_preprocessed_runs_matches_confounds_without_space_or_res_entities(
     run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
         subject=subject,
         task="LANGUAGE",
-        session=session_label,
+        run_filter="1",
         space="MNI152NLin2009cAsym",
         mask_suffix="_desc-brain_mask.nii.gz",
     )
@@ -752,9 +755,10 @@ def test_find_preprocessed_runs_matches_confounds_without_space_or_res_entities(
     assert len(run_records) == 1
     assert run_records[0]["confounds_file"] == confounds_file
     assert run_records[0]["events_file"] == events_file
+    assert run_records[0]["run_label"] == "01"
 
 
-def test_find_preprocessed_runs_uses_all_sessions_when_session_none(
+def test_find_preprocessed_runs_assigns_global_run_labels_across_sessions(
     monkeypatch, tmp_path
 ):
     bids_root = tmp_path / "bids"
@@ -800,16 +804,148 @@ def test_find_preprocessed_runs_uses_all_sessions_when_session_none(
     run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
         subject=subject,
         task="LANGUAGE",
-        session=None,
+        run_filter=None,
+        space="MNINonLinear",
+        mask_suffix="_desc-brain_mask.nii.gz",
+    )
+
+    assert len(run_records) == 2
+    assert [record["run_label"] for record in run_records] == ["01", "02"]
+    assert [record["session_label"] for record in run_records] == ["01", "02"]
+
+
+def test_find_preprocessed_runs_matches_nilearn_session_discovery_and_ignores_root_func_when_sessions_exist(
+    monkeypatch, tmp_path
+):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+
+    root_func_dir = bids_root / f"sub-{subject}" / "func"
+    root_func_dir.mkdir(parents=True)
+    (
+        root_func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-9_space-MNINonLinear_desc-preproc_bold.nii.gz"
+    ).write_bytes(b"")
+    (
+        root_func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-9_desc-confounds_timeseries.tsv"
+    ).write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+    (
+        root_func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-9_space-MNINonLinear_bold.json"
+    ).write_text(json.dumps({"RepetitionTime": 0.72}), encoding="utf-8")
+    (
+        root_func_dir
+        / f"sub-{subject}_task-LANGUAGE_run-9_space-MNINonLinear_desc-brain_mask.nii.gz"
+    ).write_bytes(b"")
+
+    for session_label in ("01", "02"):
+        func_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "func"
+        anat_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "anat"
+        func_dir.mkdir(parents=True)
+        anat_dir.mkdir(parents=True)
+
+        (
+            func_dir
+            / (
+                f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+                "space-MNINonLinear_desc-preproc_bold.nii.gz"
+            )
+        ).write_bytes(b"")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+        ).write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_bold.json"
+        ).write_text(json.dumps({"RepetitionTime": 0.72}), encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+        ).write_bytes(b"")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+
+    run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
+        subject=subject,
+        task="LANGUAGE",
+        run_filter=None,
         space="MNINonLinear",
         mask_suffix="_desc-brain_mask.nii.gz",
     )
 
     assert len(run_records) == 2
     assert [record["session_label"] for record in run_records] == ["01", "02"]
+    assert all(record["func_file"].parent.name == "func" for record in run_records)
+    assert all("/ses-" in str(record["func_file"]) for record in run_records)
 
 
-def test_find_preprocessed_surface_runs_uses_all_sessions_when_session_none(
+def test_find_preprocessed_runs_can_filter_global_run_labels_across_sessions(
+    monkeypatch, tmp_path
+):
+    bids_root = tmp_path / "bids"
+    subject = "S1"
+    for session_label in ("01", "02"):
+        func_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "func"
+        anat_dir = bids_root / f"sub-{subject}" / f"ses-{session_label}" / "anat"
+        func_dir.mkdir(parents=True)
+        anat_dir.mkdir(parents=True)
+
+        (
+            func_dir
+            / (
+                f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_"
+                "space-MNINonLinear_desc-preproc_bold.nii.gz"
+            )
+        ).write_bytes(b"")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+        ).write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_bold.json"
+        ).write_text(json.dumps({"RepetitionTime": 0.72}), encoding="utf-8")
+        (
+            func_dir
+            / f"sub-{subject}_ses-{session_label}_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+        ).write_bytes(b"")
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: bids_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_data_folder",
+        lambda: bids_root,
+    )
+
+    run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_runs(
+        subject=subject,
+        task="LANGUAGE",
+        run_filter="2",
+        space="MNINonLinear",
+        mask_suffix="_desc-brain_mask.nii.gz",
+    )
+
+    assert len(run_records) == 1
+    assert run_records[0]["run_label"] == "02"
+    assert run_records[0]["session_label"] == "02"
+
+
+def test_find_preprocessed_surface_runs_assigns_global_run_labels_across_sessions(
     monkeypatch, tmp_path
 ):
     bids_root = tmp_path / "bids"
@@ -865,9 +1001,10 @@ def test_find_preprocessed_surface_runs_uses_all_sessions_when_session_none(
     run_records = fconn_mod.FunctionalConnectivityEstimator._find_preprocessed_surface_runs(
         subject=subject,
         task="LANGUAGE",
-        session=None,
+        run_filter=None,
         space="fsLR32k",
     )
 
     assert len(run_records) == 2
+    assert [record["run_label"] for record in run_records] == ["01", "02"]
     assert [record["session_label"] for record in run_records] == ["01", "02"]
