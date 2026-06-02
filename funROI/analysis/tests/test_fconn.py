@@ -8,7 +8,9 @@ import pytest
 from nibabel.nifti1 import Nifti1Image
 from nilearn.surface import InMemoryMesh, SurfaceImage
 
+import funROI
 import funROI.analysis.fconn as fconn_mod
+import funROI.froi as froi_mod
 from funROI.analysis.tests.utils import DummyFROI
 
 
@@ -210,6 +212,63 @@ def test_fconn_run_passes_cleaning_overrides(monkeypatch):
     assert captured["task_conditions"] == ["story", "math"]
     assert captured["regress_task_conditions"] == ["story"]
     assert captured["concat_conditions_across_runs"] is True
+
+
+def test_fconn_run_auto_creates_missing_subject_froi(monkeypatch, tmp_path):
+    funROI.reset_settings()
+    funROI.set_bids_deriv_folder(tmp_path / "derivatives")
+
+    cfg = froi_mod.FROIConfig(
+        task="TASK",
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=None,
+    )
+    contrast_path = tmp_path / "contrast_p.nii.gz"
+    Nifti1Image(
+        np.zeros((1, 1, 4), dtype=np.float32),
+        np.eye(4),
+    ).to_filename(contrast_path)
+
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_save",
+        lambda self, info: None,
+    )
+    monkeypatch.setattr(
+        froi_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: np.array(
+            [0.01, 0.20, 0.03, 0.60], dtype=float
+        ),
+    )
+    monkeypatch.setattr(
+        froi_mod,
+        "_get_contrast_path",
+        lambda subject, task, run_label, contrast, typ: contrast_path,
+    )
+    monkeypatch.setattr(fconn_mod, "_get_froi_data", froi_mod._get_froi_data)
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_get_cleaned_imgs_by_run",
+        staticmethod(
+            lambda subject, task, run_filter, space, config: (
+                [_bold_img(np.array([[1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 4.0, 5.0]]))],
+                ["01"],
+                [None],
+            )
+        ),
+    )
+
+    est = fconn_mod.FunctionalConnectivityEstimator(["S1"], cfg, cfg)
+    summary, detail = est.run(task="TASK")
+
+    assert summary.shape[0] == 1
+    assert detail.shape[0] == 1
+    assert froi_mod._get_froi_path("S1", "all", cfg).exists()
+
+    funROI.reset_settings()
 
 
 def test_preprocess_and_load_preprocessed_bold_for_fc_uses_cache(
