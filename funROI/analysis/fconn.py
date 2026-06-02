@@ -241,6 +241,10 @@ def _with_global_run_label(filename: str, run_label: str) -> str:
     return filename
 
 
+def _strip_session_entity(filename: str) -> str:
+    return SES_RE.sub("_", filename, count=1)
+
+
 def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str, Path]:
     config_hash = _fc_preproc_config_hash(preproc_config)
     if "func_file" in record:
@@ -248,12 +252,19 @@ def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str
     else:
         source_file = record["func_files"]["L"]
 
-    relative_parent = source_file.relative_to(get_bids_preprocessed_folder()).parent
-    output_dir = _get_fc_preproc_root() / relative_parent
+    source_entities = _parse_bids_entities(source_file)
+    subject_label = source_entities.get("sub")
+    if subject_label is None:
+        raise ValueError(
+            f"Could not infer subject label from cache source file: {source_file}"
+        )
+
+    output_dir = _get_fc_preproc_root() / f"sub-{subject_label}" / "func"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if "func_file" in record:
-        output_name = _with_global_run_label(source_file.name, record["run_label"])
+        output_name = _strip_session_entity(source_file.name)
+        output_name = _with_global_run_label(output_name, record["run_label"])
         output_name = output_name.replace(
             "_desc-preproc_bold.nii.gz",
             f"_desc-fcpreproc-{config_hash}_bold.nii.gz",
@@ -264,7 +275,8 @@ def _get_fc_preproc_record_paths(record: Dict, preproc_config: Dict) -> Dict[str
 
     paths = {}
     for hemi, source_path in record["func_files"].items():
-        output_name = _with_global_run_label(source_path.name, record["run_label"])
+        output_name = _strip_session_entity(source_path.name)
+        output_name = _with_global_run_label(output_name, record["run_label"])
         output_name = output_name.replace(
             "_desc-preproc_bold.func.gii",
             f"_desc-fcpreproc-{config_hash}_bold.func.gii",
@@ -445,7 +457,6 @@ def preprocess_bold_for_fc(
                 "task": task,
                 "run_label": prepared["run_label"],
                 "bids_run_label": prepared.get("bids_run_label"),
-                "session_label": prepared["session_label"],
                 "config_hash": _fc_preproc_config_hash(preproc_config),
             }
             row.update(

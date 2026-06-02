@@ -299,6 +299,77 @@ def test_preprocess_and_load_preprocessed_bold_for_fc_uses_cache(
     assert prepared[0]["cleaned_img"].get_fdata().shape[-1] == 3
 
 
+def test_preprocess_cache_paths_drop_session_and_use_global_run_labels(
+    monkeypatch, tmp_path
+):
+    preproc_root = tmp_path / "preproc"
+    deriv_root = tmp_path / "derivatives"
+    func_dir = preproc_root / "sub-S1" / "ses-01" / "func"
+    func_dir.mkdir(parents=True)
+
+    func_file = (
+        func_dir
+        / "sub-S1_ses-01_task-LANGUAGE_run-1_space-MNINonLinear_desc-preproc_bold.nii.gz"
+    )
+    func_file.write_bytes(b"")
+    confounds_file = (
+        func_dir / "sub-S1_ses-01_task-LANGUAGE_run-1_desc-confounds_timeseries.tsv"
+    )
+    confounds_file.write_text("framewise_displacement\n0.0\n", encoding="utf-8")
+    mask_file = (
+        func_dir
+        / "sub-S1_ses-01_task-LANGUAGE_run-1_space-MNINonLinear_desc-brain_mask.nii.gz"
+    )
+    mask_file.write_bytes(b"")
+
+    record = {
+        "func_file": func_file,
+        "confounds_file": confounds_file,
+        "events_file": None,
+        "mask_file": mask_file,
+        "TR": 1.0,
+        "StartTime": 0.0,
+        "sidecar": {"RepetitionTime": 1.0},
+        "run_label": "02",
+        "bids_run_label": "1",
+        "session_label": "01",
+    }
+
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_preprocessed_folder",
+        lambda: preproc_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod,
+        "get_bids_deriv_folder",
+        lambda: deriv_root,
+    )
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_find_preprocessed_runs",
+        staticmethod(lambda *args, **kwargs: [record]),
+    )
+    monkeypatch.setattr(
+        fconn_mod.FunctionalConnectivityEstimator,
+        "_clean_run",
+        staticmethod(
+            lambda record_arg, config_arg: _bold_img(
+                np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]])
+            )
+        ),
+    )
+
+    manifest = fconn_mod.preprocess_bold_for_fc(["S1"], task="LANGUAGE")
+
+    cache_img = manifest["cache_img"].iloc[0]
+    assert "/sub-S1/func/" in cache_img
+    assert "/ses-01/" not in cache_img
+    assert "_run-02_" in cache_img
+    assert "_ses-01_" not in Path(cache_img).name
+    assert "session_label" not in manifest.columns
+
+
 def test_build_task_regressors_returns_canonical_and_derivative(monkeypatch, tmp_path):
     events_file = tmp_path / "events.tsv"
     pd.DataFrame(
