@@ -395,7 +395,7 @@ class ParcelsGenerator:
         if overlap_thr_roi != 0 or min_voxel_size != 0:
             self.parcels = self._filter(
                 self.parcels,
-                self._data,
+                self.parcel_info,
                 overlap_thr_roi,
                 min_voxel_size,
             )

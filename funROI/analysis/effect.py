@@ -285,10 +285,13 @@ class EffectEstimator(AnalysisSaver):
                     np.arange(effect_data.shape[0]), len(froi_labels)
                 ),
                 "n_voxels": localizer_size.flatten(),
+                "localizer_size": localizer_size.flatten(),
                 "size": effect_size.flatten(),
             }
         )
         df_summary = (
-            df_detail.groupby("froi").agg({"size": "mean"}).reset_index()
+            df_detail.groupby("froi")
+            .agg({"localizer_size": "mean", "size": "mean"})
+            .reset_index()
         )
         return df_summary, df_detail

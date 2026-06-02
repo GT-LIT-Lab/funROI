@@ -45,7 +45,13 @@ def test_effect_run_computes_detail_and_summary_fill_na_with_zero_true():
 
     # detail: 2 labels * 2 runs = 4 rows
     assert df_det.shape[0] == 4
-    assert set(df_det.columns) == {"froi", "run", "n_voxels", "size"}
+    assert set(df_det.columns) == {
+        "froi",
+        "run",
+        "n_voxels",
+        "localizer_size",
+        "size",
+    }
 
     # expected sizes per label/run
     # df_det has rows ordered by repeat(labels) then tile(runs)
@@ -56,11 +62,19 @@ def test_effect_run_computes_detail_and_summary_fill_na_with_zero_true():
     assert got[(1.0, 1)] == pytest.approx(3.0)
     assert got[(2.0, 0)] == pytest.approx(4.0)
     assert got[(2.0, 1)] == pytest.approx(3.0)
+    sizes = df_det.set_index(["froi", "run"])["localizer_size"].to_dict()
+    assert sizes[(1.0, 0)] == pytest.approx(2.0)
+    assert sizes[(1.0, 1)] == pytest.approx(2.0)
+    assert sizes[(2.0, 0)] == pytest.approx(2.0)
+    assert sizes[(2.0, 1)] == pytest.approx(2.0)
 
     # summary mean across runs
     s = df_sum.set_index("froi")["size"].to_dict()
     assert s[1.0] == pytest.approx((0.5 + 3.0) / 2)
     assert s[2.0] == pytest.approx((4.0 + 3.0) / 2)
+    localizer_summary = df_sum.set_index("froi")["localizer_size"].to_dict()
+    assert localizer_summary[1.0] == pytest.approx(2.0)
+    assert localizer_summary[2.0] == pytest.approx(2.0)
 
 
 def test_effect_run_fill_na_with_zero_false_ignores_nan():

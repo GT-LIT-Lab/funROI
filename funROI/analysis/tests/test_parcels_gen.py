@@ -294,12 +294,22 @@ def test_filter_applies_and_updates_thresholds(monkeypatch, tmp_settings):
     gen.parcels = np.array([1, 1, 2, 0], dtype=float).reshape((2, 2, 1))
     gen.img_affine = np.eye(4)
     gen._data = [np.ones((1, 4), dtype=float)]
+    gen.parcel_info = pd.DataFrame(
+        {"id": [1, 2], "size": [2, 1], "roi_overlap": [1.0, 0.1]}
+    )
+
+    captured = {}
 
     # patch _filter to remove parcel 2
     monkeypatch.setattr(
         parcels_gen_mod.ParcelsGenerator,
         "_filter",
-        classmethod(lambda cls, parcels, parcel_info, overlap_thr_roi, min_voxel_size: np.where(parcels == 2, 0, parcels)),
+        classmethod(
+            lambda cls, parcels, parcel_info, overlap_thr_roi, min_voxel_size: (
+                captured.update({"parcel_info": parcel_info.copy()}),
+                np.where(parcels == 2, 0, parcels),
+            )[1]
+        ),
     )
     monkeypatch.setattr(parcels_gen_mod.ParcelsGenerator, "_save", lambda self: None)
 
@@ -308,6 +318,7 @@ def test_filter_applies_and_updates_thresholds(monkeypatch, tmp_settings):
     assert gen.overlap_thr_roi == 0.9
     assert gen.min_voxel_size == 2
     assert 2 not in out.get_fdata().reshape(-1)
+    pd.testing.assert_frame_equal(captured["parcel_info"], gen.parcel_info)
 
 
 def test_run_internal_uses_spm_smooth_branch(monkeypatch):
