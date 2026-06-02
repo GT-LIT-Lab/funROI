@@ -1,4 +1,5 @@
 from typing import List, Optional, Union, Tuple
+from .._surface import flatten_image_data
 from ..contrast import (
     _check_orthogonal,
     _get_contrast_data,
@@ -7,7 +8,7 @@ from ..contrast import (
 from ..parcels import ParcelsConfig
 from ..froi import FROIConfig, _get_froi_data, _get_orthogonalized_froi_data
 from ..utils import validate_arguments
-from ..parcels import get_parcels
+from ..parcels import get_parcels, is_no_parcels
 import numpy as np
 import pandas as pd
 import warnings
@@ -48,8 +49,10 @@ class SpatialCorrelationEstimator(AnalysisSaver):
         # Preload the parcel labels
         if isinstance(self.froi, FROIConfig):
             self.parcels_img, self.froi_labels = get_parcels(self.froi.parcels)
+            self._has_explicit_parcels = not is_no_parcels(self.froi.parcels)
         else:
             self.parcels_img, self.froi_labels = get_parcels(self.froi)
+            self._has_explicit_parcels = True
         if not isinstance(self.froi, FROIConfig) and self.parcels_img is None:
             raise ValueError(
                 "Specified as parcels, but no parcels found for the given "
@@ -160,7 +163,7 @@ class SpatialCorrelationEstimator(AnalysisSaver):
             )
 
             if is_parcels:
-                froi_data = self.parcels_img.get_fdata().flatten()[None, :]
+                froi_data = flatten_image_data(self.parcels_img)[None, :]
                 froi_run_labels = ["parcels"]
             elif run_froi is not None:
                 froi_data = _get_froi_data(subject, self.froi, run_froi)[
@@ -231,12 +234,16 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                     subject, task2, effect2, 1, "effect", orthtype
                 )
                 if effect1_data is not None and effect1_data_2 is not None:
-                    effect1_data = np.concat([effect1_data, effect1_data_2])
+                    effect1_data = np.concatenate(
+                        [effect1_data, effect1_data_2]
+                    )
                     effect1_run_labels = (
                         effect1_run_labels + effect1_run_labels_2
                     )
                 if effect2_data is not None and effect2_data_2 is not None:
-                    effect2_data = np.concat([effect2_data, effect2_data_2])
+                    effect2_data = np.concatenate(
+                        [effect2_data, effect2_data_2]
+                    )
                     effect2_run_labels = (
                         effect2_run_labels + effect2_run_labels_2
                     )
@@ -291,6 +298,9 @@ class SpatialCorrelationEstimator(AnalysisSaver):
                 df_detail["froi"] = df_detail["froi"].apply(
                     lambda x: self.froi_labels[x]
                 )
+            elif not self._has_explicit_parcels:
+                df_summary = df_summary.drop(columns=["froi"])
+                df_detail = df_detail.drop(columns=["froi"])
             if is_parcels:
                 # rename froi to parcels
                 df_summary = df_summary.rename(columns={"froi": "parcels"})

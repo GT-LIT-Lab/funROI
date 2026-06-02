@@ -2,12 +2,15 @@
 # the costly operations of fitting models and writing images...
 
 from __future__ import annotations
+import warnings
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
 import funROI.first_level.nilearn as nl
+from funROI.datasets.hcp import _write_gifti
 from funROI.first_level.tests.utils import FakeImg
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 class FakeResidual:
     def to_filename(self, path):
@@ -42,6 +45,14 @@ class FakeFirstLevelModel:
         return {k: FakeImg() for k in nl.IMAGE_SUFFIXES.keys()}
 
 
+class FakeNullWarningModel(FakeFirstLevelModel):
+    def compute_contrast(self, contrast_vec, stat_type="t", output_type="all"):
+        warnings.warn("Contrast for run 1 is null.", UserWarning)
+        return super().compute_contrast(
+            contrast_vec, stat_type=stat_type, output_type=output_type
+        )
+
+
 def _mk_paths(monkeypatch, tmp_path: Path):
     """
     Patch all path getters used by nilearn.py so everything writes under tmp_path.
@@ -54,13 +65,23 @@ def _mk_paths(monkeypatch, tmp_path: Path):
 
     contrast_folder = lambda s, t: p("contrasts", f"sub-{s}", f"task-{t}")
     contrast_path   = lambda s, t, r, c, x: contrast_folder(s, t) / f"run-{r}_{c}_{x}.nii.gz"
+    surface_contrast_path = (
+        lambda s, t, r, c, x, h: contrast_folder(s, t) / f"run-{r}_{c}_hemi-{h}_{x}.func.gii"
+    )
     design_matrix_path = lambda s, t: p("design", f"sub-{s}_task-{t}_design.csv")
+    run_group_info_path = lambda s, t: p("design", f"sub-{s}_task-{t}_run-groups.csv")
     residuals_path     = lambda s, t: p("resid",  f"sub-{s}_task-{t}_residuals.nii.gz")
+    surface_residuals_path = (
+        lambda s, t, h: p("resid", f"sub-{s}_task-{t}_residuals_hemi-{h}.func.gii")
+    )
 
     monkeypatch.setattr(nl, "_get_contrast_folder", contrast_folder)
     monkeypatch.setattr(nl, "_get_contrast_path", contrast_path)
+    monkeypatch.setattr(nl, "_get_surface_contrast_path", surface_contrast_path)
     monkeypatch.setattr(nl, "_get_design_matrix_path", design_matrix_path)
+    monkeypatch.setattr(nl, "_get_run_group_info_path", run_group_info_path)
     monkeypatch.setattr(nl, "_get_residuals_path", residuals_path)
+    monkeypatch.setattr(nl, "_get_surface_residuals_path", surface_residuals_path)
 
     return out
 
@@ -131,6 +152,11 @@ def test_run_first_level_writes_design_residuals_and_contrasts(tmp_path, monkeyp
     resid_path = out / "resid" / "sub-100307_task-LANGUAGE_residuals.nii.gz"
     assert resid_path.exists()
 
+    run_group_info = pd.read_csv(
+        out / "design" / "sub-100307_task-LANGUAGE_run-groups.csv"
+    )
+    assert "all" in set(run_group_info["run_label"])
+
     assert len(registered) == 1
     assert registered[0][2] == "math_gt_story"
     assert len(registered[0][3]) == len(dm.columns)
@@ -146,6 +172,76 @@ def test_run_first_level_writes_design_residuals_and_contrasts(tmp_path, monkeyp
                 / f"run-{run}_math_gt_story_{suf}.nii.gz"
             )
             assert p.exists(), f"missing {p}"
+
+
+def test_run_first_level_writes_custom_run_groups(tmp_path, monkeypatch):
+    out = _mk_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: tmp_path / "bids")
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: tmp_path / "derivatives"
+    )
+
+    model = FakeFirstLevelModel(subject_label="100307", t_r=0.72)
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (
+            [model],
+            [["fake_run_01.nii.gz", "fake_run_02.nii.gz", "fake_run_03.nii.gz"]],
+            [[
+                pd.DataFrame(
+                    {
+                        "trial_type": ["math"],
+                        "onset": [0.0],
+                        "duration": [1.0],
+                    }
+                )
+                for _ in range(3)
+            ]],
+            [[pd.DataFrame({"conf1": [0, 0, 0, 0]}) for _ in range(3)]],
+        ),
+    )
+    monkeypatch.setattr(
+        nl, "load_img", lambda _: FakeImg(np.zeros((2, 2, 2, 4), dtype=float))
+    )
+    monkeypatch.setattr(
+        nl, "new_img_like", lambda _ref, data: FakeImg(np.asarray(data))
+    )
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        contrasts=[("math_gt_baseline", {"math": 1.0})],
+        orthogs=["all-but-one"],
+        run_groups={"first_two": [1, 2]},
+    )
+
+    assert (
+        out
+        / "contrasts"
+        / "sub-100307"
+        / "task-LANGUAGE"
+        / "run-first_two_math_gt_baseline_effect.nii.gz"
+    ).exists()
+
+    run_group_info = pd.read_csv(
+        out / "design" / "sub-100307_task-LANGUAGE_run-groups.csv"
+    )
+    custom_row = run_group_info[run_group_info["run_label"] == "first_two"]
+    assert custom_row.shape[0] == 1
+    assert custom_row.iloc[0]["group_type"] == "custom"
+    assert custom_row.iloc[0]["runs"] == "['01', '02']"
 
 def test_run_first_level_raises_on_invalid_regressor(tmp_path, monkeypatch):
     """
@@ -184,6 +280,16 @@ def test_run_first_level_raises_on_invalid_regressor(tmp_path, monkeypatch):
             subjects=["100307"],
             contrasts=[("bad_con", {"NOT_IN_DM": 1.0})],
         )
+
+
+def test_compute_contrast_safely_suppresses_null_run_warning():
+    model = FakeNullWarningModel()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = nl._compute_contrast_safely(model, np.array([1.0, 0.0]))
+
+    assert set(out.keys()) == set(nl.IMAGE_SUFFIXES.keys())
+    assert not any("Contrast for run 1 is null." in str(w.message) for w in caught)
 
 
 def test_run_first_level_raises_when_bids_folder_not_set(monkeypatch):
@@ -230,3 +336,200 @@ def test_run_first_level_uses_preprocessed_folder_when_relative_derivatives_miss
 
     assert called["bids_folder"] == tmp_path / "derivatives"
     assert called["derivatives_folder"] == "."
+
+
+def test_run_first_level_adds_scrub_outlier_columns(tmp_path, monkeypatch):
+    out = _mk_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: tmp_path / "bids")
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: tmp_path / "derivatives"
+    )
+
+    model = FakeFirstLevelModel(subject_label="100307", t_r=0.72)
+
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (
+            [model],
+            [["fake_run_01.nii.gz"]],
+            [[
+                pd.DataFrame(
+                    {
+                        "trial_type": ["math"],
+                        "onset": [0.0],
+                        "duration": [1.0],
+                    }
+                )
+            ]],
+            [[pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]})]],
+        ),
+    )
+    monkeypatch.setattr(
+        nl, "load_img", lambda _: FakeImg(np.zeros((2, 2, 2, 4)))
+    )
+    monkeypatch.setattr(
+        nl, "new_img_like", lambda ref, data: FakeImg(np.asarray(data))
+    )
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        nl,
+        "load_confounds",
+        lambda imgs, **kwargs: (
+            pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]}),
+            np.array([0, 2, 3]),
+        ),
+    )
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        contrasts=[("math_gt_story", {"math": 1.0})],
+        fd_threshold=0.5,
+        std_dvars_threshold=None,
+        orthogs=[],
+    )
+
+    dm = pd.read_csv(out / "design" / "sub-100307_task-LANGUAGE_design.csv")
+    assert "run-01_outlier_index_1" in dm.columns
+    assert dm["run-01_outlier_index_1"].tolist() == [0, 1, 0, 0]
+
+
+def _fake_surface_image(n_timepoints=4):
+    mesh = InMemoryMesh(
+        coordinates=np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        ),
+        faces=np.array([[0, 1, 2]]),
+    )
+    data = np.arange(3 * n_timepoints, dtype=np.float32).reshape(3, n_timepoints)
+    return SurfaceImage(
+        mesh={"left": mesh, "right": mesh},
+        data={"left": data, "right": data + 100},
+    )
+
+
+def test_run_first_level_uses_surface_bold_and_writes_gifti(tmp_path, monkeypatch):
+    out = _mk_paths(monkeypatch, tmp_path)
+    bids_dir = tmp_path / "bids"
+    derivatives_dir = bids_dir / "derivatives" / "sub-100307"
+    func_dir = derivatives_dir / "func"
+    anat_dir = derivatives_dir / "anat"
+    func_dir.mkdir(parents=True, exist_ok=True)
+    anat_dir.mkdir(parents=True, exist_ok=True)
+
+    volume_run = (
+        func_dir
+        / "sub-100307_task-LANGUAGE_run-1_acq-LR_space-MNINonLinear_desc-preproc_bold.nii.gz"
+    )
+    volume_run.write_bytes(b"fake-volume")
+    for hemi in ["L", "R"]:
+        (
+            func_dir
+            / f"sub-100307_task-LANGUAGE_run-1_acq-LR_hemi-{hemi}_space-fsLR32k_desc-preproc_bold.func.gii"
+        ).write_bytes(b"fake-surface")
+        (
+            anat_dir
+            / f"sub-100307_hemi-{hemi}_space-fsLR32k_midthickness.surf.gii"
+        ).write_bytes(b"fake-mesh")
+
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: bids_dir)
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: bids_dir / "derivatives"
+    )
+
+    surface_img = _fake_surface_image()
+
+    class FakeSurfaceFirstLevelModel(FakeFirstLevelModel):
+        def __init__(self):
+            super().__init__(subject_label="100307", t_r=0.72)
+            self.residuals = [surface_img]
+
+        def compute_contrast(self, contrast_vec, stat_type="t", output_type="all"):
+            return {k: surface_img for k in nl.IMAGE_SUFFIXES.keys()}
+
+    model = FakeSurfaceFirstLevelModel()
+    called = {}
+
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (
+            called.setdefault("kwargs", kwargs),
+            [model],
+            [[str(volume_run)]],
+            [[
+                pd.DataFrame(
+                    {
+                        "trial_type": ["math"],
+                        "onset": [0.0],
+                        "duration": [1.0],
+                    }
+                )
+            ]],
+            [[pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]})]],
+        )[1:],
+    )
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+    monkeypatch.setattr(nl, "load_surface_image", lambda *args, **kwargs: surface_img)
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        space="fsLR32k",
+        contrasts=[("math_gt_story", {"math": 1.0})],
+        orthogs=[],
+        smoothing_fwhm=4,
+    )
+
+    fit_run_imgs = model.fit_args[0]
+    assert len(fit_run_imgs) == 1
+    assert isinstance(fit_run_imgs[0], SurfaceImage)
+    assert called["kwargs"]["space_label"] == "MNINonLinear"
+    assert called["kwargs"]["smoothing_fwhm"] == 4
+
+    for hemi in ["L", "R"]:
+        contrast_path = (
+            out
+            / "contrasts"
+            / "sub-100307"
+            / "task-LANGUAGE"
+            / f"run-all_math_gt_story_hemi-{hemi}_z.func.gii"
+        )
+        residual_path = (
+            out
+            / "resid"
+            / f"sub-100307_task-LANGUAGE_residuals_hemi-{hemi}.func.gii"
+        )
+        assert contrast_path.exists()
+        assert residual_path.exists()
+
+
+def test_load_surface_numeric_data_coerces_object_dtype(tmp_path):
+    path = tmp_path / "run.func.gii"
+    _write_gifti(path, np.arange(12, dtype=np.float32).reshape(3, 4))
+
+    data = nl.load_surface_numeric_data(path)
+
+    assert data.dtype == np.float32
+    assert data.shape == (3, 4)

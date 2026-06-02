@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI.analysis.spcorr as spcorr_mod
 from funROI.analysis.tests.utils import DummyFROI
@@ -10,6 +11,29 @@ def _img_from_flat(flat, shape=(2, 2, 1)):
     import nibabel as nib
     data = np.array(flat, dtype=float).reshape(shape)
     return nib.Nifti1Image(data, affine=np.eye(4))
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_spcorr_init_parcels_missing_raises(monkeypatch):
@@ -97,6 +121,42 @@ def test_spcorr_run_orthogonal_uses_all(monkeypatch):
     assert np.isfinite(summary["fisher_z"]).all()
 
 
+def test_spcorr_run_surface_parcels_uses_flattened_mask(monkeypatch):
+    parcels_img = _surface_img([1, 1, 0], [0, 0, 0])
+    monkeypatch.setattr(
+        spcorr_mod,
+        "get_parcels",
+        lambda x: (parcels_img, {1: "A"}),
+    )
+    monkeypatch.setattr(
+        spcorr_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: (
+            np.array([1.0, 2.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+            if contrast == "e1"
+            else np.array([2.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+        ),
+    )
+    monkeypatch.setattr(
+        spcorr_mod.SpatialCorrelationEstimator,
+        "_save",
+        lambda self, info: None,
+    )
+
+    est = spcorr_mod.SpatialCorrelationEstimator(subjects=["S1"], froi="P1")
+    summary, detail = est.run(
+        task1="T1",
+        effect1="e1",
+        task2="T2",
+        effect2="e2",
+        run1="all",
+        run2="all",
+    )
+
+    assert set(summary["parcels"]) == {"A"}
+    assert set(detail["parcels"]) == {"A"}
+
+
 def test_spcorr_run_effects_nonorthogonal_triggers_asymmetric_fix_all_but_one(monkeypatch):
     """
     Condition for asymmetric fix:
@@ -161,3 +221,30 @@ def test_spcorr__run_basic_properties():
     assert list(detail.columns) == ["froi", "run", "fisher_z"]
     assert summary.shape[0] == 1
     assert np.isfinite(summary["fisher_z"].iloc[0])
+
+
+def test_spcorr_run_omits_froi_column_when_parcelless(monkeypatch):
+    monkeypatch.setattr(spcorr_mod, "FROIConfig", DummyFROI, raising=False)
+    monkeypatch.setattr(spcorr_mod, "get_parcels", lambda x: (None, None))
+    monkeypatch.setattr(spcorr_mod, "_check_orthogonal", lambda *a, **k: True)
+    monkeypatch.setattr(
+        spcorr_mod,
+        "_get_froi_data",
+        lambda subject, cfg, run_label: np.array([1.0, 0.0, 0.0, 0.0], dtype=float),
+    )
+    monkeypatch.setattr(
+        spcorr_mod,
+        "_get_contrast_data",
+        lambda subject, task, run_label, contrast, typ: np.array(
+            [1.0, 0.0, 0.0, 0.0], dtype=float
+        ),
+    )
+    monkeypatch.setattr(spcorr_mod.SpatialCorrelationEstimator, "_save", lambda self, info: None)
+
+    est = spcorr_mod.SpatialCorrelationEstimator(
+        subjects=["S1"], froi=DummyFROI(parcels="none")
+    )
+    summary, detail = est.run("T1", "e1", "T2", "e2")
+
+    assert "froi" not in summary.columns
+    assert "froi" not in detail.columns

@@ -1,8 +1,11 @@
+import nibabel as nib
 import numpy as np
 import pandas as pd
 import pytest
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI
+from funROI._surface import flatten_image_data, save_surface_image
 import funROI.analysis.froi_gen as froi_gen_mod
 from funROI.analysis.tests.utils import DummyFROIConfig
 
@@ -11,6 +14,46 @@ def _img_from_flat(flat, shape=(2, 2, 1)):
     import nibabel as nib
     data = np.asarray(flat, dtype=float).reshape(shape)
     return nib.Nifti1Image(data, affine=np.eye(4))
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _write_surface_mesh(path, mesh: InMemoryMesh):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = nib.gifti.GiftiImage(
+        darrays=[
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.coordinates, dtype=np.float32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_POINTSET"],
+            ),
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.faces, dtype=np.int32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_TRIANGLE"],
+            ),
+        ]
+    )
+    nib.save(img, path)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 @pytest.fixture
 def tmp_settings(tmp_path):
@@ -105,7 +148,6 @@ def test_froi_generator_select_label_not_found_raises(tmp_settings, monkeypatch)
         gen.select(froi_label="NOT_A_REAL_LABEL", return_results=False)
 
 
-@pytest.mark.xfail(reason="Bug in select(): overwrites list `data` with ndarray then calls data.append(...)")
 def test_froi_generator_select_returns_results_when_valid_label(tmp_settings, monkeypatch):
     cfg = DummyFROIConfig(task="T", parcels="P")
     gen = froi_gen_mod.FROIGenerator(subjects=["S1"], froi=cfg, run_label="all")
@@ -118,3 +160,72 @@ def test_froi_generator_select_returns_results_when_valid_label(tmp_settings, mo
     results = gen.select(froi_label=1, return_results=True)
     assert results is not None
     assert results[0][0] == "S1"
+
+
+def test_froi_generator_run_loads_existing_surface_and_saves(tmp_settings, tmp_path, monkeypatch):
+    cfg = DummyFROIConfig(task="T")
+    source_img = _surface_img([1, 0, 0], [0, 2, 2])
+    mesh_paths = {
+        "L": tmp_path / "L.surf.gii",
+        "R": tmp_path / "R.surf.gii",
+    }
+    _write_surface_mesh(mesh_paths["L"], _surface_mesh())
+    _write_surface_mesh(mesh_paths["R"], _surface_mesh(2.0))
+
+    froi_paths = {
+        "L": tmp_path / "src_hemi-L.func.gii",
+        "R": tmp_path / "src_hemi-R.func.gii",
+    }
+    save_surface_image(source_img, froi_paths)
+
+    monkeypatch.setattr(
+        froi_gen_mod,
+        "_get_froi_path",
+        lambda subject, run_label, config: tmp_path / "missing.nii.gz",
+    )
+    monkeypatch.setattr(
+        froi_gen_mod,
+        "_get_surface_froi_paths",
+        lambda subject, run_label, config: froi_paths,
+    )
+    monkeypatch.setattr(
+        froi_gen_mod,
+        "_get_surface_mesh_paths_for_froi",
+        lambda subject, config: mesh_paths,
+    )
+    monkeypatch.setattr(froi_gen_mod, "_create_froi", lambda *a, **k: None)
+
+    gen = froi_gen_mod.FROIGenerator(subjects=["S1"], froi=cfg, run_label="all")
+    out = gen.run(save=True)
+
+    assert out is not None and len(out) == 1
+    assert isinstance(out[0][1], SurfaceImage)
+    saved_base = tmp_settings / "froi_T" / "froi_0000"
+    assert (saved_base / "sub-S1_run-all_froi_hemi-L.func.gii").exists()
+    assert (saved_base / "sub-S1_run-all_froi_hemi-R.func.gii").exists()
+
+
+def test_froi_generator_select_surface_saves_label(tmp_settings, monkeypatch):
+    cfg = DummyFROIConfig(task="T", parcels="P")
+    gen = froi_gen_mod.FROIGenerator(subjects=["S1"], froi=cfg, run_label="all")
+    gen.subjects = ["S1"]
+    gen._data = [_surface_img([1, 1, 0], [0, 2, 2])]
+
+    monkeypatch.setattr(
+        froi_gen_mod,
+        "get_parcels",
+        lambda p: (_surface_img([1, 1, 0], [0, 2, 2]), {1: "A", 2: "B"}),
+    )
+
+    results = gen.select(froi_label="B", return_results=True)
+
+    assert results is not None
+    assert isinstance(results[0][1], SurfaceImage)
+    assert np.array_equal(
+        flatten_image_data(results[0][1]),
+        np.array([0, 0, 0, 0, 2, 2], dtype=np.float32),
+    )
+
+    saved_base = tmp_settings / "froi_T" / "froi_0000"
+    assert (saved_base / "sub-S1_run-all_label-B_hemi-L.func.gii").exists()
+    assert (saved_base / "sub-S1_run-all_label-B_hemi-R.func.gii").exists()

@@ -1,4 +1,5 @@
 from pathlib import Path
+import nibabel as nib
 import numpy as np
 import pandas as pd
 import pytest
@@ -20,6 +21,20 @@ def _nii(path: Path, data: np.ndarray):
     path.parent.mkdir(parents=True, exist_ok=True)
     img = Nifti1Image(np.asarray(data, dtype=np.float32), np.eye(4))
     img.to_filename(path)
+    return path
+
+
+def _gii(path: Path, data: np.ndarray):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim == 1:
+        arrays = [data]
+    else:
+        arrays = [data[:, i] for i in range(data.shape[1])]
+    img = nib.gifti.GiftiImage(
+        darrays=[nib.gifti.GiftiDataArray(data=array) for array in arrays]
+    )
+    nib.save(img, path)
     return path
 
 
@@ -85,13 +100,39 @@ def test_get_contrast_runs_by_group_variants(tmp_path):
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "odd") == ["01", "03"]
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "even") == ["02", "04"]
 
-    # Note: current implementation is buggy: run_label[5:] is a string, so "run not in run_label[5:]" is char-based.
-    # This test locks current behavior minimally by checking it returns a subset and doesn't crash.
-    out = contrast_mod._get_contrast_runs_by_group(subject, task, con, "orth01")
-    assert isinstance(out, list)
-    assert all(r in ["01", "02", "03", "04"] for r in out)
+    assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "orth01") == [
+        "02",
+        "03",
+        "04",
+    ]
 
     assert contrast_mod._get_contrast_runs_by_group(subject, task, con, "03") == ["03"]
+
+
+def test_get_contrast_runs_by_group_uses_saved_custom_groups(tmp_path):
+    subject, task, con = "100307", "LANGUAGE", "c1"
+    for r in ["01", "02", "03", "04"]:
+        _nii(
+            contrast_mod._get_contrast_path(subject, task, r, con, "t"),
+            np.zeros((2, 2, 2)),
+        )
+
+    run_group_info_path = contrast_mod._get_run_group_info_path(subject, task)
+    run_group_info_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run_label": "first_half",
+                "runs": ["01", "02"],
+                "n_runs": 2,
+                "group_type": "custom",
+            }
+        ]
+    ).to_csv(run_group_info_path, index=False)
+
+    assert contrast_mod._get_contrast_runs_by_group(
+        subject, task, con, "first_half"
+    ) == ["01", "02"]
 
 
 # -----------------------
@@ -112,6 +153,25 @@ def test_get_contrast_data_p_converts_zero_to_nan(tmp_path):
     assert dat.shape == (2,)
     assert np.isnan(dat[0])
     assert dat[1] == pytest.approx(0.01)
+
+
+def test_get_contrast_data_reads_surface_gifti_pair(tmp_path):
+    subject, task, run, con = "100307", "LANGUAGE", "01", "c1"
+    _gii(
+        contrast_mod._get_surface_contrast_path(
+            subject, task, run, con, "t", "L"
+        ),
+        np.array([1.0, 2.0, 3.0]),
+    )
+    _gii(
+        contrast_mod._get_surface_contrast_path(
+            subject, task, run, con, "t", "R"
+        ),
+        np.array([4.0, 5.0]),
+    )
+
+    dat = contrast_mod._get_contrast_data(subject, task, run, con, "t")
+    assert dat.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
 
 
 def test_get_orthogonalized_contrast_data_happy(tmp_path, monkeypatch):

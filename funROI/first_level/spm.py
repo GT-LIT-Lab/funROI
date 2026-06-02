@@ -17,6 +17,12 @@ import re
 from .utils import _register_contrast
 
 
+_get_run_group_info_path = lambda subject, task: (
+    _get_model_folder(subject, task)
+    / f"sub-{subject}_task-{task}_run-groups.csv"
+)
+
+
 @ensure_paths("spm_dir")
 def migrate_first_level_from_spm(
     spm_dir: Union[str, Path], subject: str, task: str, spm_mat_path=None
@@ -135,4 +141,56 @@ def migrate_first_level_from_spm(
         )
         p_img.to_filename(
             _get_contrast_path(subject, task, run_label, contrast_label, "p")
+        )
+
+    if len(run_ids) != 0:
+        run_labels = [f"{run_i:02d}" for run_i in sorted(run_ids)]
+        records = [
+            {
+                "run_label": run_label,
+                "runs": [run_label],
+                "n_runs": 1,
+                "group_type": "single-run",
+            }
+            for run_label in run_labels
+        ]
+        records.append(
+            {
+                "run_label": "all",
+                "runs": run_labels,
+                "n_runs": len(run_labels),
+                "group_type": "builtin",
+            }
+        )
+        if len(run_labels) > 1:
+            for group_label, rem in [("odd", 1), ("even", 0)]:
+                group_runs = [
+                    run_label
+                    for run_label in run_labels
+                    if int(run_label) % 2 == rem
+                ]
+                if len(group_runs) != 0:
+                    records.append(
+                        {
+                            "run_label": group_label,
+                            "runs": group_runs,
+                            "n_runs": len(group_runs),
+                            "group_type": "builtin",
+                        }
+                    )
+            for run_label in run_labels:
+                records.append(
+                    {
+                        "run_label": f"orth{run_label}",
+                        "runs": [
+                            other_run
+                            for other_run in run_labels
+                            if other_run != run_label
+                        ],
+                        "n_runs": len(run_labels) - 1,
+                        "group_type": "builtin",
+                    }
+                )
+        pd.DataFrame(records).to_csv(
+            _get_run_group_info_path(subject, task), index=False
         )

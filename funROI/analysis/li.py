@@ -1,4 +1,5 @@
 from ..froi import FROIConfig, _get_froi_data
+from .._surface import SURFACE_PARTS, is_surface_image
 import nibabel as nib
 from .utils import AnalysisSaver
 import numpy as np
@@ -77,6 +78,17 @@ class LateralityIndexAnalyzer(AnalysisSaver):
         :return: Tuple containing the number of left, right voxels and the LI.
         :rtype: Tuple[int, int, float]
         """
+        if is_surface_image(img):
+            left = np.asarray(img.data.parts[SURFACE_PARTS["L"]]).reshape(-1)
+            right = np.asarray(img.data.parts[SURFACE_PARTS["R"]]).reshape(-1)
+            n_left = int(np.sum(left > 0))
+            n_right = int(np.sum(right > 0))
+            if (n_left + n_right) > 0:
+                li = (n_left - n_right) / (n_left + n_right)
+            else:
+                li = np.nan
+            return n_left, n_right, li
+
         data = img.get_fdata()
         affine = img.affine
         nonzero_vox = np.argwhere(data > 0)

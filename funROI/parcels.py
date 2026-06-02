@@ -1,20 +1,33 @@
-import os
 import json
-from typing import Union, Tuple, Optional
+import os
+from pathlib import Path
+from typing import Dict, Mapping, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
 from nibabel.nifti1 import Nifti1Image
 from nilearn.image import load_img, math_img
-from pathlib import Path
-import numpy as np
-from . import get_analysis_output_folder
+from nilearn.surface import SurfaceImage
+
+from ._surface import (
+    SURFACE_HEMIS,
+    SURFACE_PARTS,
+    flatten_image_data,
+    get_surface_data_parts,
+    is_surface_image,
+    load_surface_image,
+    save_surface_image,
+    surface_image_from_flat,
+)
+from .settings import get_analysis_output_folder
 from .utils import ensure_paths
-import pandas as pd
 
 _get_parcels_folder = lambda: get_analysis_output_folder() / "parcels"
 
 
 class ParcelsConfig(dict):
     """
-    Configuration for parcels.
+    Configuration for volumetric parcels.
 
     :param parcels_path: Path to the parcels image.
     :type parcels_path: Union[str, Path]
@@ -27,7 +40,7 @@ class ParcelsConfig(dict):
     @ensure_paths("parcels_path", "labels_path")
     def __init__(
         self,
-        parcels_path: Union[str, Path],
+        parcels_path: Optional[Union[str, Path]],
         labels_path: Optional[Union[str, Path]] = None,
     ):
         self.parcels_path = parcels_path
@@ -63,44 +76,184 @@ class ParcelsConfig(dict):
         parcels_path = (
             _get_parcels_folder()
             / f"parcels-{name}"
-            / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
+            / (
+                f"parcels-{name}_sm-{smoothing_kernel_size}"
+                f"_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}"
+                f"_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.nii.gz"
+            )
         )
         if not os.path.exists(parcels_path):
             raise FileNotFoundError(f"Parcels file not found: {parcels_path}")
-        if os.path.exists(
+        labels_candidate = (
             _get_parcels_folder()
             / f"parcels-{name}"
-            / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
-        ):
-            labels_path = (
-                _get_parcels_folder()
-                / f"parcels-{name}"
-                / f"parcels-{name}_sm-{smoothing_kernel_size}_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
+            / (
+                f"parcels-{name}_sm-{smoothing_kernel_size}"
+                f"_spmsmooth-{use_spm_smooth}_voxthres-{overlap_thr_vox}"
+                f"_roithres-{overlap_thr_roi}_sz-{min_voxel_size}.json"
             )
-        else:
-            labels_path = None
+        )
+        labels_path = labels_candidate if labels_candidate.exists() else None
         return ParcelsConfig(parcels_path, labels_path)
 
 
+class SurfaceParcelsConfig(dict):
+    """
+    Configuration for paired hemisphere surface parcels.
+    """
+
+    @ensure_paths("labels_path")
+    def __init__(
+        self,
+        parcels_paths: Mapping[str, Union[str, Path]],
+        mesh_paths: Mapping[str, Union[str, Path]],
+        labels_path: Optional[Union[str, Path]] = None,
+        space: Optional[str] = None,
+    ):
+        self.parcels_paths = {
+            hemi: Path(parcels_paths[hemi]) for hemi in SURFACE_HEMIS
+        }
+        self.mesh_paths = {
+            hemi: Path(mesh_paths[hemi]) for hemi in SURFACE_HEMIS
+        }
+        self.labels_path = labels_path
+        self.space = space
+        dict.__init__(
+            self,
+            parcels_paths=self.parcels_paths,
+            mesh_paths=self.mesh_paths,
+            labels_path=labels_path,
+            space=space,
+        )
+
+    def __repr__(self):
+        return (
+            "SurfaceParcelsConfig("
+            f"parcels_paths={self.parcels_paths}, "
+            f"mesh_paths={self.mesh_paths}, "
+            f"labels_path={self.labels_path}, "
+            f"space={self.space})"
+        )
+
+    def __eq__(self, other):
+        if not isinstance(other, SurfaceParcelsConfig):
+            return False
+        return (
+            self.parcels_paths == other.parcels_paths
+            and self.mesh_paths == other.mesh_paths
+            and self.labels_path == other.labels_path
+            and self.space == other.space
+        )
+
+    @staticmethod
+    def from_analysis_output(
+        name: str,
+        smoothing_kernel_size: Union[int, float],
+        overlap_thr_vox: float,
+        overlap_thr_roi: float,
+        min_voxel_size: int,
+        space: str = "fsLR32k",
+    ):
+        base = _get_parcels_folder() / f"parcels-{name}"
+        stem = (
+            f"parcels-{name}_space-{space}_sm-{smoothing_kernel_size}"
+            f"_voxthres-{overlap_thr_vox}_roithres-{overlap_thr_roi}"
+            f"_sz-{min_voxel_size}"
+        )
+        parcels_paths = {
+            hemi: base / f"{stem}_hemi-{hemi}.func.gii"
+            for hemi in SURFACE_HEMIS
+        }
+        missing = [path for path in parcels_paths.values() if not path.exists()]
+        if len(missing) != 0:
+            raise FileNotFoundError(
+                f"Surface parcels files not found: {missing}"
+            )
+
+        config_path = base / f"parcels-{name}_config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Surface parcels config not found: {config_path}"
+            )
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        mesh_paths = config.get("mesh_paths", {})
+        if not all(hemi in mesh_paths for hemi in SURFACE_HEMIS):
+            raise ValueError(
+                "Surface parcels config does not include both hemisphere meshes."
+            )
+
+        labels_path = base / f"{stem}.json"
+        if not labels_path.exists():
+            labels_path = None
+
+        return SurfaceParcelsConfig(
+            parcels_paths=parcels_paths,
+            mesh_paths=mesh_paths,
+            labels_path=labels_path,
+            space=space,
+        )
+
+
+def is_no_parcels(
+    parcels: Optional[Union[str, ParcelsConfig, SurfaceParcelsConfig]]
+) -> bool:
+    """
+    Return True when the configuration explicitly requests parcel-free fROIs.
+    """
+    if parcels is None:
+        return True
+    if isinstance(parcels, str):
+        return parcels.lower() == "none"
+    if isinstance(parcels, SurfaceParcelsConfig):
+        return False
+    return parcels.parcels_path is None
+
+
+def _load_label_dict(labels_path, data: np.ndarray) -> dict:
+    if labels_path is not None and Path(labels_path).exists():
+        labels_path = Path(labels_path)
+        if labels_path.name.endswith("json"):
+            label_dict = json.load(open(labels_path))
+            return {int(k): v for k, v in label_dict.items()}
+        if labels_path.name.endswith("txt"):
+            label_dict = {}
+            with open(labels_path, "r") as f:
+                for i, line in enumerate(f):
+                    label_dict[i + 1] = line.strip()
+            return label_dict
+
+    label_dict = {}
+    for label in np.unique(data):
+        if label != 0:
+            label_dict[int(label)] = int(label)
+    return label_dict
+
+
 def get_parcels(
-    parcels: Union[str, ParcelsConfig]
-) -> Tuple[Nifti1Image, dict]:
+    parcels: Union[str, ParcelsConfig, SurfaceParcelsConfig]
+) -> Tuple[Optional[Union[Nifti1Image, SurfaceImage]], Optional[dict]]:
     """
     Get parcels image and labels.
     """
+    if is_no_parcels(parcels):
+        return None, None
+
     if isinstance(parcels, str):
         parcels_img, label_dict = _get_saved_parcels(parcels)
         if parcels_img is None:
             parcels_img, label_dict = _get_external_parcels(
                 ParcelsConfig(parcels_path=parcels)
             )
+    elif isinstance(parcels, SurfaceParcelsConfig):
+        parcels_img, label_dict = _get_surface_parcels(parcels)
     else:
         parcels_img, label_dict = _get_external_parcels(parcels)
 
     return parcels_img, label_dict
 
 
-def _get_saved_parcels(parcels_label: str) -> Tuple[Nifti1Image, dict]:
+def _get_saved_parcels(parcels_label: str) -> Tuple[Optional[Nifti1Image], Optional[dict]]:
     """
     Get parcels image and labels from a saved parcels file.
     """
@@ -115,7 +268,9 @@ def _get_saved_parcels(parcels_label: str) -> Tuple[Nifti1Image, dict]:
     )
 
 
-def _get_external_parcels(parcels: ParcelsConfig) -> Tuple[Nifti1Image, dict]:
+def _get_external_parcels(
+    parcels: ParcelsConfig,
+) -> Tuple[Optional[Nifti1Image], Optional[dict]]:
     """
     Get parcels image and labels from externally specified paths.
     """
@@ -124,50 +279,75 @@ def _get_external_parcels(parcels: ParcelsConfig) -> Tuple[Nifti1Image, dict]:
 
     parcels_img = load_img(parcels.parcels_path)
     parcels_img = math_img("np.round(img)", img=parcels_img)
+    label_dict = _load_label_dict(
+        parcels.labels_path, parcels_img.get_fdata().reshape(-1)
+    )
+    return parcels_img, label_dict
 
-    if parcels.labels_path is not None and parcels.labels_path.exists():
-        if parcels.labels_path.name.endswith("json"):
-            # If JSON file, label dict is a dictionary from numerical labels to
-            # label names
-            label_dict = json.load(open(parcels.labels_path))
-            label_dict = {int(k): v for k, v in label_dict.items()}
-        elif parcels.labels_path.name.endswith("txt"):
-            # If txt file, one label name per line
-            label_dict = {}
-            with open(parcels.labels_path, "r") as f:
-                for i, line in enumerate(f):
-                    label_dict[i + 1] = line.strip()
-    else:
-        # Default: no text labels
-        label_dict = {}
-        for label in np.unique(parcels_img.get_fdata()):
-            if label != 0:
-                label_dict[int(label)] = int(label)
+
+def _get_surface_parcels(
+    parcels: SurfaceParcelsConfig,
+) -> Tuple[Optional[SurfaceImage], Optional[dict]]:
+    if not all(path.exists() for path in parcels.parcels_paths.values()):
+        return None, None
+    if not all(path.exists() for path in parcels.mesh_paths.values()):
+        return None, None
+
+    parcels_img = load_surface_image(
+        parcels.parcels_paths, parcels.mesh_paths
+    )
+    parts = get_surface_data_parts(parcels_img)
+    parcels_img = SurfaceImage(
+        mesh=parcels_img.mesh,
+        data={
+            SURFACE_PARTS[hemi]: np.round(parts[hemi]).astype(np.float32)
+            for hemi in SURFACE_HEMIS
+        },
+    )
+    label_dict = _load_label_dict(
+        parcels.labels_path, flatten_image_data(parcels_img)
+    )
     return parcels_img, label_dict
 
 
 def label_parcel(
-    parcels_img: Nifti1Image, label_dict: dict, label: int
-) -> Tuple[Nifti1Image, str]:
+    parcels_img: Union[Nifti1Image, SurfaceImage], label_dict: dict, label: int
+) -> Tuple[Union[Nifti1Image, SurfaceImage], str]:
     """
     Label a parcel.
     """
     if label not in label_dict:
         raise ValueError(f"Label {label} not found in label dictionary.")
     label_name = label_dict[label]
-    return math_img("img == {}".format(label), img=parcels_img), label_name
+    if is_surface_image(parcels_img):
+        parts = get_surface_data_parts(parcels_img)
+        mask_img = SurfaceImage(
+            mesh=parcels_img.mesh,
+            data={
+                SURFACE_PARTS[hemi]: (
+                    np.round(parts[hemi]) == label
+                ).astype(np.float32)
+                for hemi in SURFACE_HEMIS
+            },
+        )
+        return mask_img, label_name
+    return math_img(f"img == {label}", img=parcels_img), label_name
 
 
 def merge_parcels(
-    parcels_img: Nifti1Image,
+    parcels_img: Union[Nifti1Image, SurfaceImage],
     label_dict: dict,
     label1: Union[int, str],
     label2: Union[int, str],
     new_label: Optional[str] = None,
-) -> Tuple[Nifti1Image, dict]:
+) -> Tuple[Union[Nifti1Image, SurfaceImage], dict]:
     """
     Merge two parcels.
     """
+    if is_surface_image(parcels_img):
+        raise NotImplementedError(
+            "merge_parcels does not currently support surface parcels."
+        )
 
     if new_label in label_dict.values():
         raise ValueError(
@@ -220,14 +400,29 @@ def _merge_parcels(data: np.ndarray, x: int, y: int) -> np.ndarray:
     return data
 
 
-def save_parcels(parcels_img: Nifti1Image, label_dict: dict, name: str):
+def save_parcels(
+    parcels_img: Union[Nifti1Image, SurfaceImage], label_dict: dict, name: str
+):
     """
     Save parcels image and labels.
     """
-    parcels_path = _get_parcels_folder() / f"{name}.nii.gz"
-    parcels_labels_path = _get_parcels_folder() / f"{name}.json"
-    if not parcels_path.parent.exists():
-        parcels_path.parent.mkdir(parents=True, exist_ok=True)
+    base = _get_parcels_folder()
+    base.mkdir(parents=True, exist_ok=True)
+    if is_surface_image(parcels_img):
+        save_surface_image(
+            parcels_img,
+            {
+                hemi: base / f"{name}_hemi-{hemi}.func.gii"
+                for hemi in SURFACE_HEMIS
+            },
+        )
+        parcels_labels_path = base / f"{name}.json"
+        with open(parcels_labels_path, "w") as f:
+            json.dump(label_dict, f)
+        return
+
+    parcels_path = base / f"{name}.nii.gz"
+    parcels_labels_path = base / f"{name}.json"
     parcels_img.to_filename(parcels_path)
     with open(parcels_labels_path, "w") as f:
         json.dump(label_dict, f)

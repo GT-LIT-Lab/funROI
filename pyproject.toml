@@ -1,6 +1,6 @@
 [project]
 name = "funROI"
-version = "1.0.0.post1"
+version = "2.0.0"
 authors = [
     {name = "Ruimin Gao", email = "ruimin.gao@gatech.edu"},
     {name = "Anna A. Ivanova", email = "a.ivanova@gatech.edu"}
@@ -14,8 +14,9 @@ dependencies = [
     "pandas>=2.2.0",
     "scipy>=1.8.0",
     "statsmodels",
-    "nilearn",
-    "boto3"
+    "nilearn==0.14.0rc0",
+    "boto3",
+    "tqdm"
 ]
 description = "A Python package for functional ROI analyses of fMRI data"
 homepage = "https://github.com/GT-LIT-Lab/funROI"

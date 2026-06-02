@@ -1,7 +1,8 @@
 from typing import List, Optional, Union, Tuple
+from .._surface import flatten_image_data
 from ..utils import validate_arguments
 from ..contrast import _check_orthogonal
-from ..parcels import ParcelsConfig, get_parcels
+from ..parcels import ParcelsConfig, get_parcels, is_no_parcels
 from ..froi import FROIConfig, _get_froi_data, _get_orthogonalized_froi_data
 import numpy as np
 import pandas as pd
@@ -76,6 +77,14 @@ class OverlapEstimator(AnalysisSaver):
         """
         self.froi1 = froi1
         self.froi2 = froi2
+        froi1_has_explicit_parcels = not (
+            isinstance(self.froi1, FROIConfig)
+            and is_no_parcels(self.froi1.parcels)
+        )
+        froi2_has_explicit_parcels = not (
+            isinstance(self.froi2, FROIConfig)
+            and is_no_parcels(self.froi2.parcels)
+        )
         froi1_img, froi1_labels = get_parcels(
             self.froi1.parcels
             if isinstance(self.froi1, FROIConfig)
@@ -93,7 +102,7 @@ class OverlapEstimator(AnalysisSaver):
         if is_parcels1:
             if froi1_img is None:
                 raise ValueError("Parcels image 1 not found")
-            froi1_data = froi1_img.get_fdata().flatten()[None, :]
+            froi1_data = flatten_image_data(froi1_img)[None, :]
         else:
             if subject1 is None:
                 raise ValueError("Subject label 1 is required for fROIs")
@@ -101,7 +110,7 @@ class OverlapEstimator(AnalysisSaver):
         if is_parcels2:
             if froi2_img is None:
                 raise ValueError("Parcels image 2 not found")
-            froi2_data = froi2_img.get_fdata().flatten()[None, :]
+            froi2_data = flatten_image_data(froi2_img)[None, :]
         else:
             if subject2 is None:
                 raise ValueError("Subject label 2 is required for fROIs")
@@ -190,14 +199,10 @@ class OverlapEstimator(AnalysisSaver):
                             f"{self.froi2} for the orthogonalization, "
                             "skipping."
                         )
-                    froi1_data = np.concat([froi1_data, froi1_data2])
-                    froi2_data = np.concat([froi2_data, froi2_data2])
-                    froi1_run_labels = np.concat(
-                        [froi1_run_labels, froi1_run_labels2]
-                    )
-                    froi2_run_labels = np.concat(
-                        [froi2_run_labels, froi2_run_labels2]
-                    )
+                    froi1_data = np.concatenate([froi1_data, froi1_data2])
+                    froi2_data = np.concatenate([froi2_data, froi2_data2])
+                    froi1_run_labels = froi1_run_labels + froi1_run_labels2
+                    froi2_run_labels = froi2_run_labels + froi2_run_labels2
 
         df_summary, df_detail = self._run(froi1_data, froi2_data, self.kind)
         if not is_parcels1 or not is_parcels2:
@@ -215,6 +220,9 @@ class OverlapEstimator(AnalysisSaver):
             df_detail["froi1"] = df_detail["froi1"].apply(
                 lambda x: froi1_labels[x]
             )
+        elif not is_parcels1 and not froi1_has_explicit_parcels:
+            df_summary = df_summary.drop(columns=["froi1"])
+            df_detail = df_detail.drop(columns=["froi1"])
         if froi2_labels is not None:
             df_summary["froi2"] = df_summary["froi2"].apply(
                 lambda x: froi2_labels[x]
@@ -222,6 +230,9 @@ class OverlapEstimator(AnalysisSaver):
             df_detail["froi2"] = df_detail["froi2"].apply(
                 lambda x: froi2_labels[x]
             )
+        elif not is_parcels2 and not froi2_has_explicit_parcels:
+            df_summary = df_summary.drop(columns=["froi2"])
+            df_detail = df_detail.drop(columns=["froi2"])
         if is_parcels1:
             df_summary = df_summary.rename(columns={"froi1": "parcel1"})
             df_detail = df_detail.rename(columns={"froi1": "parcel1"})

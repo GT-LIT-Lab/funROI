@@ -1,12 +1,16 @@
 from pathlib import Path
+import json
+import nibabel as nib
 import numpy as np
 import pandas as pd
 import pytest
 from nibabel.nifti1 import Nifti1Image
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI
+from funROI._surface import flatten_image_data, save_surface_image
 import funROI.froi as froi_mod
-from funROI.parcels import ParcelsConfig
+from funROI.parcels import ParcelsConfig, SurfaceParcelsConfig
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +26,46 @@ def _nii(path: Path, data: np.ndarray):
     img = Nifti1Image(np.asarray(data, dtype=np.float32), np.eye(4))
     img.to_filename(path)
     return path
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _write_surface_mesh(path: Path, mesh: InMemoryMesh):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = nib.gifti.GiftiImage(
+        darrays=[
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.coordinates, dtype=np.float32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_POINTSET"],
+            ),
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.faces, dtype=np.int32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_TRIANGLE"],
+            ),
+        ]
+    )
+    nib.save(img, path)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_get_froi_path_creates_and_reuses_and_increments_id(tmp_path):
@@ -71,6 +115,76 @@ def test_get_froi_path_creates_and_reuses_and_increments_id(tmp_path):
     df3 = pd.read_csv(info_path)
     assert df3.shape[0] == 2
     assert set(df3["id"].astype(int).tolist()) == {0, 1}
+
+
+def test_froi_config_validates_repr_eq_and_registry_record(tmp_path):
+    parcels_path = _nii(tmp_path / "parcels.nii.gz", np.zeros((2, 2, 2)))
+
+    cfg1 = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c2", "c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=str(parcels_path),
+        conjunction_type="and",
+    )
+    cfg2 = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c2", "c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=ParcelsConfig(parcels_path),
+        conjunction_type="and",
+    )
+
+    assert "FROIConfig(task=LANGUAGE" in repr(cfg1)
+    assert cfg1 == cfg2
+
+    record = froi_mod._build_froi_registry_record(cfg1)
+    assert record["contrasts"] == str(["c1", "c2"])
+    assert record["parcels"] == parcels_path
+
+    with pytest.raises(ValueError, match="non-negative"):
+        froi_mod.FROIConfig(
+            task="LANGUAGE",
+            contrasts=["c1"],
+            threshold_type="none",
+            threshold_value=-1,
+            parcels=ParcelsConfig(parcels_path),
+        )
+
+
+def test_froi_config_special_cases_none_parcels():
+    cfg = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels="none",
+    )
+
+    assert cfg.parcels.parcels_path is None
+    record = froi_mod._build_froi_registry_record(cfg)
+    assert record["parcels"] is None
+    assert record["labels"] is None
+
+
+def test_froi_config_coerces_single_contrast_conjunction_to_none(tmp_path):
+    parcels_path = _nii(tmp_path / "parcels.nii.gz", np.zeros((2, 2, 2)))
+
+    cfg = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=ParcelsConfig(parcels_path),
+        conjunction_type="and",
+    )
+
+    assert cfg.conjunction_type is None
+    assert cfg["conjunction_type"] is None
+    record = froi_mod._build_froi_registry_record(cfg)
+    assert record["conjunction_type"] is None
 
 
 def test_create_froi_with_real_parcels_labels_produces_labeled_mask(tmp_path, monkeypatch):
@@ -198,6 +312,26 @@ def test_get_orthogonalized_froi_data_returns_none_when_no_runs(tmp_path, monkey
     assert out == (None, None)
 
 
+def test_get_froi_runs_intersects_runs_across_contrasts(tmp_path, monkeypatch):
+    cfg = froi_mod.FROIConfig(
+        task="LANGUAGE",
+        contrasts=["c1", "c2"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=ParcelsConfig(
+            _nii(tmp_path / "parcels.nii.gz", np.zeros((2, 2, 2)))
+        ),
+        conjunction_type=None,
+    )
+
+    def fake_get_contrast_runs(subject, task, contrast):
+        return {"c1": ["01", "02", "03"], "c2": ["02", "03", "04"]}[contrast]
+
+    monkeypatch.setattr(froi_mod, "_get_contrast_runs", fake_get_contrast_runs)
+
+    assert froi_mod._get_froi_runs("100307", cfg) == ["02", "03"]
+
+
 def test_get_orthogonalized_froi_data_creates_missing_and_stacks(tmp_path, monkeypatch):
     cfg = _basic_cfg(tmp_path)
 
@@ -301,6 +435,21 @@ def test_get_froi_data_creates_when_missing(tmp_path, monkeypatch):
     funROI.reset_settings()
 
 
+def test_get_froi_data_returns_none_when_creation_fails(tmp_path, monkeypatch):
+    funROI.reset_settings()
+    funROI.set_bids_deriv_folder(tmp_path / "derivatives")
+
+    cfg = _basic_cfg(tmp_path)
+    monkeypatch.setattr(
+        froi_mod, "_get_froi_path", lambda *a, **k: tmp_path / "missing.nii.gz"
+    )
+    monkeypatch.setattr(froi_mod, "_create_froi", lambda *a, **k: None)
+
+    assert froi_mod._get_froi_data("100307", cfg, "01") is None
+
+    funROI.reset_settings()
+
+
 def test_threshold_p_map_none_threshold(tmp_path):
     # data shape: (n_runs, n_voxels)
     data = np.array(
@@ -347,6 +496,45 @@ def test_threshold_p_map_n_selects_top_n_per_voxel_across_runs(tmp_path):
     expected[1, 1] = 1
     expected[2, 0] = 1
     assert np.array_equal(mask, expected)
+
+
+def test_threshold_p_map_percent_and_fdr():
+    data = np.array(
+        [
+            [0.01, 0.20, 0.03],
+            [0.02, 0.40, 0.06],
+            [0.50, 0.10, 0.07],
+        ],
+        dtype=float,
+    )
+
+    percent_mask = froi_mod._threshold_p_map(
+        data, threshold_type="percent", threshold_value=0.5
+    )
+    expected_percent = np.array(
+        [
+            [1, 0, 0],
+            [1, 0, 0],
+            [0, 0, 1],
+        ],
+        dtype=float,
+    )
+    assert np.array_equal(percent_mask, expected_percent)
+
+    fdr_mask = froi_mod._threshold_p_map(
+        data, threshold_type="fdr", threshold_value=0.05
+    )
+    assert np.array_equal(
+        fdr_mask,
+        np.array(
+            [
+                [1, 0, 1],
+                [0, 0, 0],
+                [0, 0, 0],
+            ],
+            dtype=float,
+        ),
+    )
 
 def test_create_p_map_mask_conjunction_min():
     """
@@ -427,3 +615,85 @@ def test_create_p_map_mask_conjunction_and():
 
     assert mask.shape == (2, 3)
     assert np.array_equal(mask, expected)
+
+
+def test_create_p_map_mask_conjunction_or_and_explicit_mask():
+    data = np.array(
+        [
+            [
+                [0.01, 0.20, 0.03],
+                [0.30, 0.10, 0.40],
+            ],
+            [
+                [0.20, 0.02, 0.50],
+                [0.01, 0.50, 0.20],
+            ],
+        ],
+        dtype=float,
+    )
+    mask = froi_mod._create_p_map_mask(
+        data,
+        conjunction_type="or",
+        threshold_type="none",
+        threshold_value=0.05,
+        mask=np.array([1, 0, 1], dtype=int),
+    )
+    expected = np.array([[True, False, True], [True, False, False]])
+    assert np.array_equal(mask, expected)
+
+
+def test_create_and_load_surface_froi_roundtrip(tmp_path, monkeypatch):
+    subject = "100307"
+    task = "LANGUAGE"
+    run = "01"
+
+    mesh_paths = {
+        "L": tmp_path / "L.surf.gii",
+        "R": tmp_path / "R.surf.gii",
+    }
+    _write_surface_mesh(mesh_paths["L"], _surface_mesh())
+    _write_surface_mesh(mesh_paths["R"], _surface_mesh(2.0))
+
+    parcels_img = _surface_img([1, 1, 0], [0, 2, 2])
+    parcels_paths = {
+        "L": tmp_path / "parcels_L.func.gii",
+        "R": tmp_path / "parcels_R.func.gii",
+    }
+    save_surface_image(parcels_img, parcels_paths)
+    labels_path = tmp_path / "parcels.json"
+    labels_path.write_text(json.dumps({1: "A", 2: "B"}))
+
+    cfg = froi_mod.FROIConfig(
+        task=task,
+        contrasts=["c1"],
+        threshold_type="none",
+        threshold_value=0.05,
+        parcels=SurfaceParcelsConfig(
+            parcels_paths=parcels_paths,
+            mesh_paths=mesh_paths,
+            labels_path=labels_path,
+            space="fsLR32k",
+        ),
+        conjunction_type=None,
+    )
+
+    pvals = np.array([0.001, 0.002, 0.5, 0.5, 0.003, 0.004], dtype=float)
+    monkeypatch.setattr(
+        froi_mod,
+        "_get_contrast_data",
+        lambda sub, task_, run_, con, suf: pvals if suf == "p" else None,
+    )
+
+    created = froi_mod._create_froi(subject, cfg, run, return_nifti=True)
+    loaded = froi_mod._get_froi_data(subject, cfg, run, return_nifti=True)
+
+    assert isinstance(created, SurfaceImage)
+    assert isinstance(loaded, SurfaceImage)
+    assert froi_mod._build_froi_registry_record(cfg)["parcels"]["kind"] == "surface"
+    assert np.array_equal(
+        flatten_image_data(loaded),
+        np.array([1, 1, 0, 0, 2, 2], dtype=np.float32),
+    )
+
+    froi_paths = froi_mod._get_surface_froi_paths(subject, run, cfg)
+    assert all(path.exists() for path in froi_paths.values())

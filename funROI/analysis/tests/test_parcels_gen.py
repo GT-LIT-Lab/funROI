@@ -8,6 +8,7 @@ import nibabel as nib
 
 import funROI
 import funROI.analysis.parcels_gen as parcels_gen_mod
+import funROI.analysis.surface_parcels_gen as surface_parcels_gen_mod
 from funROI.analysis.tests.utils import DummyFROIConfig
 
 
@@ -45,6 +46,14 @@ def test_add_subjects_rejects_redundant_subjects(monkeypatch, tmp_settings):
             p_threshold_value=0.05,
             conjunction_type="and",
         )
+
+
+def test_parcels_generator_dispatches_to_surface_generator():
+    gen = parcels_gen_mod.ParcelsGenerator("P", space="fsLR32k")
+
+    assert isinstance(gen, surface_parcels_gen_mod.SurfaceParcelsGenerator)
+    assert gen.parcels_name == "P"
+    assert gen.space == "fsLR32k"
 
 
 def test_add_subjects_sets_shape_affine_and_collects_data(monkeypatch, tmp_settings, tmp_path):
@@ -285,12 +294,22 @@ def test_filter_applies_and_updates_thresholds(monkeypatch, tmp_settings):
     gen.parcels = np.array([1, 1, 2, 0], dtype=float).reshape((2, 2, 1))
     gen.img_affine = np.eye(4)
     gen._data = [np.ones((1, 4), dtype=float)]
+    gen.parcel_info = pd.DataFrame(
+        {"id": [1, 2], "size": [2, 1], "roi_overlap": [1.0, 0.1]}
+    )
+
+    captured = {}
 
     # patch _filter to remove parcel 2
     monkeypatch.setattr(
         parcels_gen_mod.ParcelsGenerator,
         "_filter",
-        classmethod(lambda cls, parcels, parcel_info, overlap_thr_roi, min_voxel_size: np.where(parcels == 2, 0, parcels)),
+        classmethod(
+            lambda cls, parcels, parcel_info, overlap_thr_roi, min_voxel_size: (
+                captured.update({"parcel_info": parcel_info.copy()}),
+                np.where(parcels == 2, 0, parcels),
+            )[1]
+        ),
     )
     monkeypatch.setattr(parcels_gen_mod.ParcelsGenerator, "_save", lambda self: None)
 
@@ -299,6 +318,7 @@ def test_filter_applies_and_updates_thresholds(monkeypatch, tmp_settings):
     assert gen.overlap_thr_roi == 0.9
     assert gen.min_voxel_size == 2
     assert 2 not in out.get_fdata().reshape(-1)
+    pd.testing.assert_frame_equal(captured["parcel_info"], gen.parcel_info)
 
 
 def test_run_internal_uses_spm_smooth_branch(monkeypatch):
@@ -398,6 +418,55 @@ def test_harmonic_mean_matches_definition():
     # harmonic mean = n / sum(1/x)
     expected = len(x) / np.sum(1 / x)
     assert np.isclose(hm, expected)
+
+
+def test_harmonic_mean_returns_zero_for_empty_nan_and_nonpositive():
+    assert parcels_gen_mod.ParcelsGenerator._harmonic_mean([]) == 0.0
+    assert parcels_gen_mod.ParcelsGenerator._harmonic_mean([np.nan]) == 0.0
+    assert parcels_gen_mod.ParcelsGenerator._harmonic_mean([1.0, 0.0]) == 0.0
+
+
+def test_watershed_requires_3d_and_segments_simple_peaks():
+    with pytest.raises(AssertionError, match="Input array must be 3D"):
+        parcels_gen_mod.ParcelsGenerator._watershed(np.ones((2, 2)))
+
+    arr = np.zeros((3, 3, 3), dtype=float)
+    arr[0, 0, 0] = 2.0
+    arr[2, 2, 2] = 1.0
+    labels = parcels_gen_mod.ParcelsGenerator._watershed(arr)
+
+    assert labels.shape == arr.shape
+    assert np.all(labels > 0)
+    assert labels[0, 0, 0] == labels[2, 2, 2]
+
+
+def test_gaussian_b_spline_kernel_is_symmetric_and_nonnegative():
+    x = np.arange(-3, 4)
+    kernel = parcels_gen_mod.ParcelsGenerator._gaussian_convolved_with_b_spline(
+        x, 1.2
+    )
+
+    assert np.all(kernel >= 0)
+    assert np.allclose(kernel, kernel[::-1])
+    assert kernel[3] == kernel.max()
+
+
+def test_smooth_array_handles_zero_and_positive_fwhm():
+    arr = np.zeros((5, 5, 5), dtype=float)
+    arr[2, 2, 2] = 1.0
+    affine = np.eye(4)
+
+    unchanged = parcels_gen_mod.ParcelsGenerator._smooth_array(
+        arr.copy(), affine, [0.0, None, 0.0]
+    )
+    assert np.array_equal(unchanged, arr)
+
+    smoothed = parcels_gen_mod.ParcelsGenerator._smooth_array(
+        arr.copy(), affine, [2.0, 0.0, 0.0]
+    )
+    assert smoothed.shape == arr.shape
+    assert smoothed[2, 2, 2] < 1.0
+    assert smoothed.sum() > 0
 
 
 def test_save_writes_expected_files(tmp_settings):

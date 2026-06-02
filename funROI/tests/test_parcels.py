@@ -1,10 +1,13 @@
 import json
 
+import nibabel as nib
 import numpy as np
 import pytest
 from nibabel.nifti1 import Nifti1Image
+from nilearn.surface import InMemoryMesh, SurfaceImage
 
 import funROI
+from funROI._surface import flatten_image_data, save_surface_image
 import funROI.parcels as parcels_mod
 
 
@@ -19,6 +22,46 @@ def _reset_and_set_output(tmp_path):
 def _make_parcels_img(data: np.ndarray) -> Nifti1Image:
     affine = np.eye(4)
     return Nifti1Image(data.astype(np.float32), affine)
+
+
+def _surface_mesh(offset: float = 0.0) -> InMemoryMesh:
+    coordinates = np.array(
+        [
+            [0.0 + offset, 0.0, 0.0],
+            [1.0 + offset, 0.0, 0.0],
+            [0.0 + offset, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return InMemoryMesh(coordinates, faces)
+
+
+def _write_surface_mesh(path, mesh: InMemoryMesh):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = nib.gifti.GiftiImage(
+        darrays=[
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.coordinates, dtype=np.float32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_POINTSET"],
+            ),
+            nib.gifti.GiftiDataArray(
+                data=np.asarray(mesh.faces, dtype=np.int32),
+                intent=nib.nifti1.intent_codes["NIFTI_INTENT_TRIANGLE"],
+            ),
+        ]
+    )
+    nib.save(img, path)
+
+
+def _surface_img(left, right) -> SurfaceImage:
+    return SurfaceImage(
+        mesh={"left": _surface_mesh(), "right": _surface_mesh(2.0)},
+        data={
+            "left": np.asarray(left, dtype=np.float32),
+            "right": np.asarray(right, dtype=np.float32),
+        },
+    )
 
 
 def test_parcels_config_eq_repr_and_from_analysis_output(tmp_path):
@@ -238,3 +281,105 @@ def test_get_parcels_string_prefers_saved_and_falls_back_to_external(tmp_path):
     img2, labels2 = parcels_mod.get_parcels(str(ext_path))
     assert img2 is not None
     assert labels2 == {1: 1, 2: 2}
+
+
+def test_get_parcels_special_cases_none():
+    img, labels = parcels_mod.get_parcels("none")
+    assert img is None
+    assert labels is None
+    assert parcels_mod.is_no_parcels("none") is True
+    assert parcels_mod.is_no_parcels(parcels_mod.ParcelsConfig(None)) is True
+
+
+def test_save_and_get_surface_parcels_roundtrip(tmp_path):
+    parcels_img = _surface_img([1, 1, 0], [0, 2, 2])
+    labels = {1: "Left", 2: "Right"}
+
+    mesh_paths = {
+        "L": tmp_path / "L.surf.gii",
+        "R": tmp_path / "R.surf.gii",
+    }
+    _write_surface_mesh(mesh_paths["L"], _surface_mesh())
+    _write_surface_mesh(mesh_paths["R"], _surface_mesh(2.0))
+
+    parcels_mod.save_parcels(parcels_img, labels, name="surface_saved")
+
+    cfg = parcels_mod.SurfaceParcelsConfig(
+        parcels_paths={
+            "L": funROI.get_analysis_output_folder()
+            / "parcels"
+            / "surface_saved_hemi-L.func.gii",
+            "R": funROI.get_analysis_output_folder()
+            / "parcels"
+            / "surface_saved_hemi-R.func.gii",
+        },
+        mesh_paths=mesh_paths,
+        labels_path=funROI.get_analysis_output_folder()
+        / "parcels"
+        / "surface_saved.json",
+        space="fsLR32k",
+    )
+
+    loaded_img, loaded_labels = parcels_mod.get_parcels(cfg)
+
+    assert isinstance(loaded_img, SurfaceImage)
+    assert loaded_labels == labels
+    assert np.array_equal(
+        flatten_image_data(loaded_img),
+        np.array([1, 1, 0, 0, 2, 2], dtype=np.float32),
+    )
+
+
+def test_surface_parcels_config_from_analysis_output_and_label_parcel(tmp_path):
+    name = "surf"
+    base = funROI.get_analysis_output_folder() / "parcels" / f"parcels-{name}"
+    base.mkdir(parents=True, exist_ok=True)
+
+    mesh_paths = {
+        "L": tmp_path / "L.surf.gii",
+        "R": tmp_path / "R.surf.gii",
+    }
+    _write_surface_mesh(mesh_paths["L"], _surface_mesh())
+    _write_surface_mesh(mesh_paths["R"], _surface_mesh(2.0))
+
+    stem = (
+        "parcels-surf_space-fsLR32k_sm-6_voxthres-0.25"
+        "_roithres-0_sz-0"
+    )
+    parcels_img = _surface_img([1, 1, 0], [0, 2, 2])
+    save_surface_image(
+        parcels_img,
+        {
+            "L": base / f"{stem}_hemi-L.func.gii",
+            "R": base / f"{stem}_hemi-R.func.gii",
+        },
+    )
+    with open(base / f"{stem}.json", "w") as f:
+        json.dump({1: "A", 2: "B"}, f)
+    with open(base / "parcels-surf_config.json", "w") as f:
+        json.dump(
+            {
+                "mesh_paths": {
+                    hemi: str(path) for hemi, path in mesh_paths.items()
+                }
+            },
+            f,
+        )
+
+    cfg = parcels_mod.SurfaceParcelsConfig.from_analysis_output(
+        name=name,
+        smoothing_kernel_size=6,
+        overlap_thr_vox=0.25,
+        overlap_thr_roi=0,
+        min_voxel_size=0,
+        space="fsLR32k",
+    )
+    loaded_img, loaded_labels = parcels_mod.get_parcels(cfg)
+    mask_img, label_name = parcels_mod.label_parcel(loaded_img, loaded_labels, 2)
+
+    assert isinstance(loaded_img, SurfaceImage)
+    assert label_name == "B"
+    assert np.array_equal(
+        flatten_image_data(mask_img),
+        np.array([0, 0, 0, 0, 1, 1], dtype=np.float32),
+    )
