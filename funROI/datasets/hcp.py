@@ -269,7 +269,6 @@ def _convert_to_bids(
         )
 
         run_i += 1
-        shutil.rmtree(run_folder)
 
 
 @ensure_paths("data_dir")
@@ -322,5 +321,3 @@ def fetch_data(
             )
         except Exception as e:
             print(f"Error processing {subject}: {e}")
-
-    shutil.rmtree(data_dir / "HCP_1200")
