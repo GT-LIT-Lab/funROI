@@ -180,7 +180,7 @@ def plot_mni152_surface_stat_map(
             nilearn_plotting.plot_surf_stat_map(
                 surf_mesh=getattr(fsaverage, mesh_name),
                 stat_map=surf_data[hemisphere],
-                hemi=hemi_short,
+                hemi=hemisphere,
                 view=view,
                 bg_on_data=True,
                 bg_map=sulc_maps[hemisphere],
