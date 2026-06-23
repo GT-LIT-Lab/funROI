@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ from nilearn.surface import InMemoryMesh, SurfaceImage, load_surf_data
 
 import funROI
 import funROI.analysis.surface_parcels_gen as surface_parcels_gen_mod
+from funROI._surface import write_gifti
 
 
 def _mesh(offset: float = 0.0) -> InMemoryMesh:
@@ -171,3 +173,66 @@ def test_filter_removes_small_or_low_overlap_parcels(tmp_settings):
         np.concatenate([out.data.parts["left"], out.data.parts["right"]]),
         np.array([1, 1, 0, 0, 0, 0, 0, 0]),
     )
+
+
+def test_run_fast_reuses_saved_surface_overlap_map(monkeypatch, tmp_settings):
+    base = tmp_settings / "parcels" / "parcels-surf"
+    base.mkdir(parents=True, exist_ok=True)
+
+    (base / "parcels-surf_config.json").write_text(
+        json.dumps(
+            {
+                "configs": [],
+                "space": "fsLR32k",
+                "mesh_paths": {
+                    "L": "/tmp/L.surf.gii",
+                    "R": "/tmp/R.surf.gii",
+                },
+            }
+        )
+    )
+    write_gifti(
+        base / "parcels-surf_space-fsLR32k_overlap_hemi-L.func.gii",
+        np.array([1, 1, 0, 0], dtype=np.float32),
+    )
+    write_gifti(
+        base / "parcels-surf_space-fsLR32k_overlap_hemi-R.func.gii",
+        np.array([0, 0, 1, 1], dtype=np.float32),
+    )
+
+    monkeypatch.setattr(
+        surface_parcels_gen_mod,
+        "load_surf_mesh",
+        lambda path: _mesh() if "L.surf.gii" in str(path) else _mesh(2.0),
+    )
+
+    expected_parcels = np.array([1, 1, 0, 0, 0, 0, 2, 2], dtype=int)
+    monkeypatch.setattr(
+        surface_parcels_gen_mod.SurfaceParcelsGenerator,
+        "_run",
+        classmethod(
+            lambda cls, binary_masks, *args, **kwargs: (
+                np.asarray(binary_masks[0]),
+                expected_parcels,
+            )
+        ),
+    )
+
+    gen = surface_parcels_gen_mod.SurfaceParcelsGenerator._run_fast(
+        "surf",
+        space="fsLR32k",
+        smoothing_kernel_size=6,
+        overlap_thr_vox=0.25,
+    )
+
+    assert isinstance(gen, surface_parcels_gen_mod.SurfaceParcelsGenerator)
+    assert np.array_equal(
+        gen.overlap_map,
+        np.array([1, 1, 0, 0, 0, 0, 1, 1], dtype=np.float32),
+    )
+    assert np.array_equal(gen.parcels, expected_parcels)
+    assert list(gen.parcel_info.columns) == ["id", "size"]
+    assert (
+        base
+        / "parcels-surf_space-fsLR32k_sm-6_voxthres-0.25_roithres-0_sz-0_hemi-L.func.gii"
+    ).exists()

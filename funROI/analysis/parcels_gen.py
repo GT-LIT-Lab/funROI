@@ -197,7 +197,18 @@ class ParcelsGenerator:
         smoothing_kernel_size: Optional[Union[float, List[float]]] = 8,
         overlap_thr_vox: Optional[float] = 0.1,
         use_spm_smooth: Optional[bool] = True,
+        space: Optional[str] = None,
     ) -> "ParcelsGenerator":
+        if space is not None:
+            from .surface_parcels_gen import SurfaceParcelsGenerator
+
+            return SurfaceParcelsGenerator._run_fast(
+                parcels_name=parcels_name,
+                space=space,
+                smoothing_kernel_size=smoothing_kernel_size,
+                overlap_thr_vox=overlap_thr_vox,
+            )
+
         parcel_gen = ParcelsGenerator(
             parcels_name,
             smoothing_kernel_size,
@@ -253,6 +264,7 @@ class ParcelsGenerator:
                 parcel_info_data, columns=["id", "size"]
             )
             parcel_gen._save()
+        return parcel_gen
 
     def run(self) -> Nifti1Image:
         """

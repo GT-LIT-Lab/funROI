@@ -56,6 +56,36 @@ def test_parcels_generator_dispatches_to_surface_generator():
     assert gen.space == "fsLR32k"
 
 
+def test_run_fast_dispatches_to_surface_generator(monkeypatch):
+    sentinel = object()
+    called = {}
+
+    def fake_surface_run_fast(cls, **kwargs):
+        called["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(
+        surface_parcels_gen_mod.SurfaceParcelsGenerator,
+        "_run_fast",
+        classmethod(fake_surface_run_fast),
+    )
+
+    out = parcels_gen_mod.ParcelsGenerator._run_fast(
+        "P",
+        smoothing_kernel_size=6,
+        overlap_thr_vox=0.25,
+        space="fsLR32k",
+    )
+
+    assert out is sentinel
+    assert called["kwargs"] == {
+        "parcels_name": "P",
+        "space": "fsLR32k",
+        "smoothing_kernel_size": 6,
+        "overlap_thr_vox": 0.25,
+    }
+
+
 def test_add_subjects_sets_shape_affine_and_collects_data(monkeypatch, tmp_settings, tmp_path):
     monkeypatch.setattr(parcels_gen_mod, "FROIConfig", DummyFROIConfig, raising=False)
 

@@ -124,6 +124,126 @@ class SurfaceParcelsGenerator:
         self._data.extend(new_data)
         self.configs.append({"subjects": subjects, "surface": config})
 
+    @classmethod
+    def _run_fast(
+        cls,
+        parcels_name: str,
+        space: str = "fsLR32k",
+        smoothing_kernel_size: Optional[Union[float, List[float]]] = 8,
+        overlap_thr_vox: Optional[float] = 0.1,
+    ) -> "SurfaceParcelsGenerator":
+        parcel_gen = cls(
+            parcels_name=parcels_name,
+            space=space,
+            smoothing_kernel_size=smoothing_kernel_size,
+            overlap_thr_vox=overlap_thr_vox,
+        )
+        # Run parcel generation with a pre-calculated overlapping map.
+        # Use this method only if you are sure what you are doing.
+
+        base = cls._get_analysis_parcels_folder(parcels_name)
+        config_path = base / f"parcels-{parcels_name}_config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(
+                "Surface parcels config not found. Please double-check the "
+                "parcels name and configurations."
+            )
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        mesh_paths = config.get("mesh_paths", {})
+        if not all(hemi in mesh_paths for hemi in SURFACE_HEMIS):
+            raise ValueError(
+                "Surface parcels config does not include both hemisphere meshes."
+            )
+        parcel_gen.mesh_paths = {
+            hemi: Path(mesh_paths[hemi]) for hemi in SURFACE_HEMIS
+        }
+        parcel_gen.mesh = {
+            "left": load_surf_mesh(parcel_gen.mesh_paths["L"]),
+            "right": load_surf_mesh(parcel_gen.mesh_paths["R"]),
+        }
+        parcel_gen.hemi_sizes = {
+            "left": int(len(np.asarray(parcel_gen.mesh["left"].coordinates))),
+            "right": int(len(np.asarray(parcel_gen.mesh["right"].coordinates))),
+        }
+        left_size = parcel_gen.hemi_sizes["left"]
+        parcel_gen.hemi_slices = {
+            "left": slice(0, left_size),
+            "right": slice(left_size, left_size + parcel_gen.hemi_sizes["right"]),
+        }
+
+        parcel_info_path = (
+            base
+            / (
+                f"parcels-{parcels_name}_space-{space}"
+                f"_sm-{smoothing_kernel_size}_voxthres-{overlap_thr_vox}_info.csv"
+            )
+        )
+        parcels_paths = {
+            hemi: (
+                base
+                / (
+                    f"parcels-{parcels_name}_space-{space}"
+                    f"_sm-{smoothing_kernel_size}_voxthres-{overlap_thr_vox}"
+                    f"_roithres-0_sz-0_hemi-{hemi}.func.gii"
+                )
+            )
+            for hemi in SURFACE_HEMIS
+        }
+
+        if parcel_info_path.exists() and all(
+            path.exists() for path in parcels_paths.values()
+        ):
+            parcel_gen.parcel_info = pd.read_csv(parcel_info_path)
+            parcel_gen.parcels = np.concatenate(
+                [
+                    load_surface_numeric_data(parcels_paths["L"]).reshape(-1),
+                    load_surface_numeric_data(parcels_paths["R"]).reshape(-1),
+                ]
+            )
+            return parcel_gen
+
+        overlap_paths = {
+            hemi: (
+                base
+                / f"parcels-{parcels_name}_space-{space}_overlap_hemi-{hemi}.func.gii"
+            )
+            for hemi in SURFACE_HEMIS
+        }
+        if not all(path.exists() for path in overlap_paths.values()):
+            raise FileNotFoundError(
+                "Overlapping map not found. Please double-check the parcels "
+                "name and configurations."
+            )
+
+        parcel_gen.overlap_map = np.concatenate(
+            [
+                load_surface_numeric_data(overlap_paths["L"]).reshape(-1),
+                load_surface_numeric_data(overlap_paths["R"]).reshape(-1),
+            ]
+        )
+        _, parcel_gen.parcels = cls._run(
+            [parcel_gen.overlap_map],
+            parcel_gen.mesh,
+            parcel_gen.hemi_slices,
+            smoothing_kernel_size,
+            overlap_thr_vox,
+        )
+
+        parcel_info_data = []
+        for parcel in np.unique(parcel_gen.parcels):
+            if parcel == 0:
+                continue
+            parcel_mask = parcel_gen.parcels == parcel
+            parcel_size = int(np.sum(parcel_mask))
+            parcel_info_data.append([int(parcel), parcel_size])
+        parcel_gen.parcel_info = pd.DataFrame(
+            parcel_info_data, columns=["id", "size"]
+        )
+        parcel_gen._save()
+        return parcel_gen
+
     def run(self) -> SurfaceImage:
         if self.mesh is None:
             raise RuntimeError("No surface mesh loaded. Add subjects first.")
