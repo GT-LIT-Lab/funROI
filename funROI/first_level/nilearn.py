@@ -418,48 +418,87 @@ def _infer_bootstrap_volume_space(
     return None
 
 
-def _add_scrub_outlier_regressors(
+def _split_first_level_bids_kwargs(
+    model_kwargs: Dict,
+) -> Tuple[Optional[Dict], Dict]:
+    defaults = {
+        "strategy": ("motion", "high_pass", "wm_csf"),
+        "motion": "full",
+        "scrub": 5,
+        "fd_threshold": 0.2,
+        "std_dvars_threshold": 3,
+        "wm_csf": "basic",
+        "global_signal": "basic",
+        "compcor": "anat_combined",
+        "n_compcor": "all",
+        "ica_aroma": "full",
+        "demean": True,
+    }
+
+    model_kwargs = dict(model_kwargs)
+    if model_kwargs.get("confounds_strategy") is None:
+        unknown_confounds_kwargs = {
+            key: value
+            for key, value in model_kwargs.items()
+            if key.startswith("confounds_")
+        }
+        if len(unknown_confounds_kwargs) > 0:
+            raise RuntimeError(
+                "Unknown keyword arguments. Keyword arguments should start "
+                f"with `confounds_` prefix: {unknown_confounds_kwargs}"
+            )
+        return None, model_kwargs
+
+    kwargs_load_confounds = {}
+    for key, default_value in defaults.items():
+        confounds_key = f"confounds_{key}"
+        if confounds_key in model_kwargs:
+            kwargs_load_confounds[key] = model_kwargs.pop(confounds_key)
+        else:
+            kwargs_load_confounds[key] = default_value
+
+    unknown_confounds_kwargs = {
+        key: value
+        for key, value in model_kwargs.items()
+        if key.startswith("confounds_")
+    }
+    if len(unknown_confounds_kwargs) > 0:
+        raise RuntimeError(
+            "Unknown keyword arguments. Keyword arguments should start with "
+            f"`confounds_` prefix: {unknown_confounds_kwargs}"
+        )
+
+    return kwargs_load_confounds, model_kwargs
+
+
+def _append_scrub_outlier_regressors(
     confounds_df: pd.DataFrame,
+    img_files,
     fd_threshold: Optional[float],
     std_dvars_threshold: Optional[float],
 ) -> pd.DataFrame:
     if fd_threshold is None and std_dvars_threshold is None:
         return confounds_df
 
+    scrub_fd_threshold = np.inf if fd_threshold is None else fd_threshold
+    scrub_std_dvars_threshold = (
+        np.inf if std_dvars_threshold is None else std_dvars_threshold
+    )
+    scrub_confounds, masks = load_confounds(
+        img_files,
+        fd_threshold=scrub_fd_threshold,
+        std_dvars_threshold=scrub_std_dvars_threshold,
+        strategy=["scrub"],
+    )
+    if isinstance(scrub_confounds, list):
+        scrub_confounds = scrub_confounds[0]
+        masks = masks[0]
+
     confounds_df = confounds_df.copy()
-    outlier_mask = np.zeros(len(confounds_df), dtype=bool)
-
-    if fd_threshold is not None:
-        if "framewise_displacement" in confounds_df.columns:
-            outlier_mask |= (
-                pd.to_numeric(
-                    confounds_df["framewise_displacement"], errors="coerce"
-                )
-                .fillna(0)
-                .to_numpy()
-                > fd_threshold
-            )
-        else:
-            warnings.warn(
-                "FD threshold was requested for surface first-level analysis, "
-                "but framewise_displacement is missing from the confounds file."
-            )
-
-    if std_dvars_threshold is not None:
-        if "std_dvars" in confounds_df.columns:
-            outlier_mask |= (
-                pd.to_numeric(confounds_df["std_dvars"], errors="coerce")
-                .fillna(0)
-                .to_numpy()
-                > std_dvars_threshold
-            )
-        else:
-            warnings.warn(
-                "std_dvars threshold was requested for surface first-level "
-                "analysis, but std_dvars is missing from the confounds file."
-            )
-
-    outlier_indexes = np.where(outlier_mask)[0]
+    if masks is not None:
+        outlier_indexes = set(scrub_confounds.index) - set(masks)
+    else:
+        outlier_indexes = {}
     for outlier_index in outlier_indexes:
         confounds_df[f"outlier_index_{outlier_index}"] = (
             np.arange(len(confounds_df)) == outlier_index
@@ -479,6 +518,9 @@ def _collect_surface_bids_inputs(
     model_kwargs: Dict,
 ):
     model_kwargs = dict(model_kwargs)
+    kwargs_load_confounds, model_kwargs = _split_first_level_bids_kwargs(
+        model_kwargs
+    )
     filters = [("task", task), ("space", space), ("hemi", "L")]
     if data_filter is not None:
         filters.extend(data_filter)
@@ -605,9 +647,27 @@ def _collect_surface_bids_inputs(
                 )
                 continue
 
-            run_specs.append(str(left_file))
             subject_events.append(pd.read_csv(events_file, sep="\t"))
-            subject_confounds.append(pd.read_csv(confounds_file, sep="\t"))
+            img_file_pair = [str(left_file), str(right_file)]
+            if kwargs_load_confounds is None:
+                confounds_df = pd.read_csv(confounds_file, sep="\t")
+            else:
+                confounds_df, _ = load_confounds(
+                    img_file_pair, **kwargs_load_confounds
+                )
+                if isinstance(confounds_df, list):
+                    confounds_df = confounds_df[0]
+                if confounds_df is None:
+                    confounds_df = pd.DataFrame()
+            if fd_threshold is not None or std_dvars_threshold is not None:
+                confounds_df = _append_scrub_outlier_regressors(
+                    confounds_df,
+                    img_file_pair,
+                    fd_threshold,
+                    std_dvars_threshold,
+                )
+            run_specs.append(str(left_file))
+            subject_confounds.append(confounds_df)
             trs.append(float(TR))
 
         if len(run_specs) == 0:
@@ -622,14 +682,6 @@ def _collect_surface_bids_inputs(
                 f"Surface runs for subject {subject} and task {task} do not "
                 "share a consistent RepetitionTime."
             )
-
-        if fd_threshold is not None or std_dvars_threshold is not None:
-            subject_confounds = [
-                _add_scrub_outlier_regressors(
-                    confounds_df, fd_threshold, std_dvars_threshold
-                )
-                for confounds_df in subject_confounds
-            ]
 
         surface_model_kwargs = dict(model_kwargs)
         surface_model_kwargs.setdefault("t_r", subject_tr)

@@ -578,6 +578,7 @@ def test_run_first_level_supports_surface_only_bids_bootstrap(
     surface_img = _fake_surface_image()
     called = {}
     holder = {}
+    confounds_calls = []
 
     class FakeSurfaceOnlyFirstLevelModel(FakeFirstLevelModel):
         def __init__(self, **kwargs):
@@ -595,6 +596,15 @@ def test_run_first_level_supports_surface_only_bids_bootstrap(
     monkeypatch.setattr(nl, "FirstLevelModel", FakeSurfaceOnlyFirstLevelModel)
     monkeypatch.setattr(
         nl,
+        "load_confounds",
+        lambda img_files, **kwargs: (
+            confounds_calls.append({"img_files": img_files, "kwargs": kwargs}),
+            pd.DataFrame({"motion": [0.0, 0.0, 0.0, 0.0]}),
+            None,
+        )[1:],
+    )
+    monkeypatch.setattr(
+        nl,
         "make_first_level_design_matrix",
         lambda *, frame_times, events, **kwargs: pd.DataFrame(
             {"math": np.ones(len(frame_times))}
@@ -609,12 +619,15 @@ def test_run_first_level_supports_surface_only_bids_bootstrap(
         space="fsLR32k",
         contrasts=[("math_gt_story", {"math": 1.0})],
         orthogs=[],
+        confounds_strategy=("motion",),
         smoothing_fwhm=4,
     )
 
     assert called["kwargs"]["subject_label"] == "100307"
     assert called["kwargs"]["t_r"] == 0.72
     assert called["kwargs"]["smoothing_fwhm"] == 4
+    assert "confounds_strategy" not in called["kwargs"]
+    assert confounds_calls[0]["kwargs"]["strategy"] == ("motion",)
     fit_run_imgs = holder["model"].fit_args[0]
     assert len(fit_run_imgs) == 1
     assert isinstance(fit_run_imgs[0], SurfaceImage)
