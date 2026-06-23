@@ -525,6 +525,117 @@ def test_run_first_level_uses_surface_bold_and_writes_gifti(tmp_path, monkeypatc
         assert residual_path.exists()
 
 
+def test_run_first_level_supports_surface_only_bids_bootstrap(
+    tmp_path, monkeypatch
+):
+    out = _mk_paths(monkeypatch, tmp_path)
+    bids_dir = tmp_path / "bids"
+    derivatives_dir = bids_dir / "derivatives" / "sub-100307"
+    func_dir = derivatives_dir / "func"
+    anat_dir = derivatives_dir / "anat"
+    bids_func_dir = bids_dir / "sub-100307" / "func"
+    func_dir.mkdir(parents=True, exist_ok=True)
+    anat_dir.mkdir(parents=True, exist_ok=True)
+    bids_func_dir.mkdir(parents=True, exist_ok=True)
+
+    for hemi in ["L", "R"]:
+        (
+            func_dir
+            / f"sub-100307_task-LANGUAGE_run-1_acq-LR_hemi-{hemi}_space-fsLR32k_desc-preproc_bold.func.gii"
+        ).write_bytes(b"fake-surface")
+        (
+            anat_dir
+            / f"sub-100307_hemi-{hemi}_space-fsLR32k_midthickness.surf.gii"
+        ).write_bytes(b"fake-mesh")
+
+    (
+        func_dir
+        / "sub-100307_task-LANGUAGE_run-1_acq-LR_desc-confounds_timeseries.tsv"
+    ).write_text("motion\n0.0\n0.0\n0.0\n0.0\n")
+    (
+        bids_func_dir / "sub-100307_task-LANGUAGE_run-1_acq-LR_events.tsv"
+    ).write_text("trial_type\tonset\tduration\nmath\t0\t1\n")
+    (
+        func_dir
+        / "sub-100307_task-LANGUAGE_run-1_acq-LR_hemi-L_space-fsLR32k_desc-preproc_bold.json"
+    ).write_text('{"RepetitionTime": 0.72}')
+
+    monkeypatch.setattr(nl, "get_bids_data_folder", lambda: bids_dir)
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder_relative", lambda: "derivatives"
+    )
+    monkeypatch.setattr(
+        nl, "get_bids_preprocessed_folder", lambda: bids_dir / "derivatives"
+    )
+    monkeypatch.setattr(
+        nl,
+        "first_level_from_bids",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("volume bootstrap should not be used")
+        ),
+    )
+
+    surface_img = _fake_surface_image()
+    called = {}
+    holder = {}
+
+    class FakeSurfaceOnlyFirstLevelModel(FakeFirstLevelModel):
+        def __init__(self, **kwargs):
+            called["kwargs"] = kwargs
+            super().__init__(
+                subject_label=kwargs.get("subject_label", "100307"),
+                t_r=kwargs.get("t_r", 0.72),
+            )
+            holder["model"] = self
+            self.residuals = [surface_img]
+
+        def compute_contrast(self, contrast_vec, stat_type="t", output_type="all"):
+            return {k: surface_img for k in nl.IMAGE_SUFFIXES.keys()}
+
+    monkeypatch.setattr(nl, "FirstLevelModel", FakeSurfaceOnlyFirstLevelModel)
+    monkeypatch.setattr(
+        nl,
+        "make_first_level_design_matrix",
+        lambda *, frame_times, events, **kwargs: pd.DataFrame(
+            {"math": np.ones(len(frame_times))}
+        ),
+    )
+    monkeypatch.setattr(nl, "_register_contrast", lambda *args, **kwargs: None)
+    monkeypatch.setattr(nl, "load_surface_image", lambda *args, **kwargs: surface_img)
+
+    nl.run_first_level(
+        task="LANGUAGE",
+        subjects=["100307"],
+        space="fsLR32k",
+        contrasts=[("math_gt_story", {"math": 1.0})],
+        orthogs=[],
+        smoothing_fwhm=4,
+    )
+
+    assert called["kwargs"]["subject_label"] == "100307"
+    assert called["kwargs"]["t_r"] == 0.72
+    assert called["kwargs"]["smoothing_fwhm"] == 4
+    fit_run_imgs = holder["model"].fit_args[0]
+    assert len(fit_run_imgs) == 1
+    assert isinstance(fit_run_imgs[0], SurfaceImage)
+
+    for hemi in ["L", "R"]:
+        contrast_path = (
+            out
+            / "contrasts"
+            / "sub-100307"
+            / "task-LANGUAGE"
+            / f"run-all_math_gt_story_hemi-{hemi}_z.func.gii"
+        )
+        residual_path = (
+            out
+            / "resid"
+            / f"sub-100307_task-LANGUAGE_residuals_hemi-{hemi}.func.gii"
+        )
+        assert contrast_path.exists()
+        assert residual_path.exists()
+
+
 def test_load_surface_numeric_data_coerces_object_dtype(tmp_path):
     path = tmp_path / "run.func.gii"
     _write_gifti(path, np.arange(12, dtype=np.float32).reshape(3, 4))

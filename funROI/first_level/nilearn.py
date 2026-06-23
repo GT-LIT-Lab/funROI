@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import warnings
@@ -9,10 +10,12 @@ import numpy as np
 import pandas as pd
 from nilearn.glm import expression_to_contrast_vector
 from nilearn.glm.first_level import (
+    FirstLevelModel,
     first_level_from_bids,
     make_first_level_design_matrix,
 )
 from nilearn.image import load_img, new_img_like
+from nilearn.interfaces.bids.query import get_bids_files
 from nilearn.interfaces.fmriprep import load_confounds
 from nilearn.surface import SurfaceImage
 from scipy import sparse
@@ -49,6 +52,9 @@ IMAGE_SUFFIXES = {
     "stat": "t",
     "p_value": "p",
 }
+
+
+ENTITY_RE = re.compile(r"(^|_)([A-Za-z0-9]+)-([^_]+)")
 
 
 def _compute_contrast_safely(model, contrast_vector):
@@ -268,6 +274,62 @@ def _uses_surface_space(
     return False
 
 
+def _parse_bids_entity_map(pathlike) -> Dict[str, str]:
+    stem = Path(pathlike).name
+    for suffix in (".nii.gz", ".func.gii", ".surf.gii", ".tsv", ".json"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+
+    entities = {}
+    for match in ENTITY_RE.finditer(stem):
+        entities[match.group(2)] = match.group(3)
+    return entities
+
+
+def _find_matching_bids_file(
+    directory: Path,
+    reference_file: Path,
+    suffix: str,
+    *,
+    required_entities: Optional[Tuple[str, ...]] = None,
+) -> Optional[Path]:
+    if not directory.exists():
+        return None
+
+    if required_entities is None:
+        required_entities = (
+            "sub",
+            "ses",
+            "task",
+            "acq",
+            "ce",
+            "dir",
+            "rec",
+            "run",
+        )
+
+    reference_entities = _parse_bids_entity_map(reference_file)
+    reference_entities = {
+        key: reference_entities[key]
+        for key in required_entities
+        if key in reference_entities
+    }
+
+    matches = []
+    for candidate in sorted(directory.glob(f"*{suffix}")):
+        candidate_entities = _parse_bids_entity_map(candidate)
+        if all(
+            candidate_entities.get(key) == value
+            for key, value in reference_entities.items()
+        ):
+            matches.append(candidate)
+
+    if len(matches) == 0:
+        return None
+    return matches[0]
+
+
 def _parse_bids_entities(pathlike) -> Optional[Dict[str, str]]:
     filename = Path(pathlike).name
     pattern = (
@@ -354,6 +416,232 @@ def _infer_bootstrap_volume_space(
     if len(unique_spaces) > 0:
         return sorted(unique_spaces)[0]
     return None
+
+
+def _add_scrub_outlier_regressors(
+    confounds_df: pd.DataFrame,
+    fd_threshold: Optional[float],
+    std_dvars_threshold: Optional[float],
+) -> pd.DataFrame:
+    if fd_threshold is None and std_dvars_threshold is None:
+        return confounds_df
+
+    confounds_df = confounds_df.copy()
+    outlier_mask = np.zeros(len(confounds_df), dtype=bool)
+
+    if fd_threshold is not None:
+        if "framewise_displacement" in confounds_df.columns:
+            outlier_mask |= (
+                pd.to_numeric(
+                    confounds_df["framewise_displacement"], errors="coerce"
+                )
+                .fillna(0)
+                .to_numpy()
+                > fd_threshold
+            )
+        else:
+            warnings.warn(
+                "FD threshold was requested for surface first-level analysis, "
+                "but framewise_displacement is missing from the confounds file."
+            )
+
+    if std_dvars_threshold is not None:
+        if "std_dvars" in confounds_df.columns:
+            outlier_mask |= (
+                pd.to_numeric(confounds_df["std_dvars"], errors="coerce")
+                .fillna(0)
+                .to_numpy()
+                > std_dvars_threshold
+            )
+        else:
+            warnings.warn(
+                "std_dvars threshold was requested for surface first-level "
+                "analysis, but std_dvars is missing from the confounds file."
+            )
+
+    outlier_indexes = np.where(outlier_mask)[0]
+    for outlier_index in outlier_indexes:
+        confounds_df[f"outlier_index_{outlier_index}"] = (
+            np.arange(len(confounds_df)) == outlier_index
+        ).astype(int)
+    return confounds_df
+
+
+def _collect_surface_bids_inputs(
+    bids_data_folder: Path,
+    derivatives_root: Path,
+    task: str,
+    subjects: Optional[List[str]],
+    space: str,
+    data_filter: Optional[List[Tuple[str, str]]],
+    fd_threshold: Optional[float],
+    std_dvars_threshold: Optional[float],
+    model_kwargs: Dict,
+):
+    model_kwargs = dict(model_kwargs)
+    filters = [("task", task), ("space", space), ("hemi", "L")]
+    if data_filter is not None:
+        filters.extend(data_filter)
+
+    def _surface_func_files_for_subject(
+        subject: Optional[str],
+    ) -> List[Path]:
+        return [
+            Path(path)
+            for path in get_bids_files(
+                main_path=derivatives_root,
+                modality_folder="func",
+                file_tag="bold",
+                file_type="func.gii",
+                sub_label=subject,
+                filters=filters,
+            )
+            if path.endswith("desc-preproc_bold.func.gii")
+        ]
+
+    if subjects is None:
+        all_func_files = _surface_func_files_for_subject(None)
+        if len(all_func_files) == 0:
+            raise ValueError(
+                f"No surface preprocessed BOLD runs found for task {task} "
+                f"in space {space}."
+            )
+        subject_order = sorted(
+            {
+                entities["sub"]
+                for path in all_func_files
+                for entities in [_parse_bids_entity_map(path)]
+                if "sub" in entities
+            }
+        )
+    else:
+        subject_order = subjects
+
+    models = []
+    models_run_imgs = []
+    models_events = []
+    models_confounds = []
+
+    for subject in subject_order:
+        func_files = _surface_func_files_for_subject(subject)
+        if len(func_files) == 0:
+            raise ValueError(
+                f"No surface preprocessed BOLD runs found for subject "
+                f"{subject} and task {task}."
+            )
+
+        subject_mesh_paths = _find_surface_mesh_paths(
+            derivatives_root, subject, space
+        )
+        if subject_mesh_paths is None:
+            raise ValueError(
+                f"Could not find surface meshes for subject {subject} in "
+                f"space {space}."
+            )
+
+        run_specs = []
+        subject_events = []
+        subject_confounds = []
+        trs = []
+
+        for left_file in func_files:
+            right_file = Path(
+                str(left_file).replace("_hemi-L_", "_hemi-R_")
+            )
+            if not right_file.exists():
+                warnings.warn(
+                    f"Right hemisphere file not found for {left_file.name}, "
+                    "skipping."
+                )
+                continue
+
+            file_entities = _parse_bids_entity_map(left_file)
+            file_session = file_entities.get("ses")
+
+            confounds_file = _find_matching_bids_file(
+                left_file.parent,
+                left_file,
+                "_desc-confounds_timeseries.tsv",
+            )
+            if confounds_file is None or not confounds_file.exists():
+                warnings.warn(
+                    f"Confounds file not found for {left_file.name}, "
+                    "skipping."
+                )
+                continue
+
+            if file_session is None:
+                events_dir = bids_data_folder / f"sub-{subject}" / "func"
+            else:
+                events_dir = (
+                    bids_data_folder / f"sub-{subject}" / f"ses-{file_session}" / "func"
+                )
+            events_file = _find_matching_bids_file(
+                events_dir, left_file, "_events.tsv"
+            )
+            if events_file is None:
+                events_file = _find_matching_bids_file(
+                    left_file.parent, left_file, "_events.tsv"
+                )
+            if events_file is None or not events_file.exists():
+                warnings.warn(
+                    f"Events file not found for {left_file.name}, skipping."
+                )
+                continue
+
+            sidecar_path = Path(str(left_file).replace(".func.gii", ".json"))
+            if not sidecar_path.exists():
+                warnings.warn(
+                    f"JSON sidecar not found for {left_file.name}, skipping."
+                )
+                continue
+
+            with open(sidecar_path, "r") as f:
+                sidecar = json.load(f)
+            TR = sidecar.get("RepetitionTime")
+            if TR is None:
+                warnings.warn(
+                    f"RepetitionTime missing for {left_file.name}, skipping."
+                )
+                continue
+
+            run_specs.append(str(left_file))
+            subject_events.append(pd.read_csv(events_file, sep="\t"))
+            subject_confounds.append(pd.read_csv(confounds_file, sep="\t"))
+            trs.append(float(TR))
+
+        if len(run_specs) == 0:
+            raise ValueError(
+                f"No usable surface preprocessed BOLD runs found for subject "
+                f"{subject} and task {task}."
+            )
+
+        subject_tr = trs[0]
+        if any(not np.isclose(tr, subject_tr) for tr in trs[1:]):
+            raise ValueError(
+                f"Surface runs for subject {subject} and task {task} do not "
+                "share a consistent RepetitionTime."
+            )
+
+        if fd_threshold is not None or std_dvars_threshold is not None:
+            subject_confounds = [
+                _add_scrub_outlier_regressors(
+                    confounds_df, fd_threshold, std_dvars_threshold
+                )
+                for confounds_df in subject_confounds
+            ]
+
+        surface_model_kwargs = dict(model_kwargs)
+        surface_model_kwargs.setdefault("t_r", subject_tr)
+        surface_model_kwargs.setdefault("subject_label", subject)
+        surface_model_kwargs["minimize_memory"] = False
+        model = FirstLevelModel(**surface_model_kwargs)
+        models.append(model)
+        models_run_imgs.append(run_specs)
+        models_events.append(subject_events)
+        models_confounds.append(subject_confounds)
+
+    return models, models_run_imgs, models_events, models_confounds
 
 
 def _load_surface_run_image(
@@ -845,31 +1133,59 @@ def run_first_level(
             derivatives_root, task
         )
         if bootstrap_space is None:
-            raise ValueError(
-                f"Surface data were found for space '{space}', but no matching "
-                "preprocessed volume BOLD files were found to bootstrap the "
-                "first-level model metadata. Expected at least one "
-                "`*_bold.nii*` file for the same task in the derivatives "
-                "folder."
+            (
+                models,
+                models_run_imgs,
+                models_events,
+                models_confounds,
+            ) = _collect_surface_bids_inputs(
+                bids_data_folder,
+                derivatives_root,
+                task,
+                subjects,
+                space,
+                data_filter,
+                fd_threshold,
+                std_dvars_threshold,
+                kwargs,
             )
+        else:
+            (
+                models,
+                models_run_imgs,
+                models_events,
+                models_confounds,
+            ) = first_level_from_bids(
+                bids_data_folder,
+                task,
+                sub_labels=subjects,
+                space_label=bootstrap_space,
+                derivatives_folder=derivatives_folder,
+                img_filters=data_filter,
+                minimize_memory=False,
+                **kwargs,
+            )
+    else:
+        (
+            models,
+            models_run_imgs,
+            models_events,
+            models_confounds,
+        ) = first_level_from_bids(
+            bids_data_folder,
+            task,
+            sub_labels=subjects,
+            space_label=bootstrap_space,
+            derivatives_folder=derivatives_folder,
+            img_filters=data_filter,
+            minimize_memory=False,
+            **kwargs,
+        )
 
-    (
-        models,
-        models_run_imgs,
-        models_events,
-        models_confounds,
-    ) = first_level_from_bids(
-        bids_data_folder,
-        task,
-        sub_labels=subjects,
-        space_label=bootstrap_space,
-        derivatives_folder=derivatives_folder,
-        img_filters=data_filter,
-        minimize_memory=False,
-        **kwargs,
-    )
-
-    if fd_threshold is not None or std_dvars_threshold is not None:
+    if (
+        bootstrap_space is not None
+        or not surface_requested
+    ) and (fd_threshold is not None or std_dvars_threshold is not None):
         if fd_threshold is None:
             fd_threshold = np.inf
         if std_dvars_threshold is None:

@@ -49,6 +49,43 @@ def test_get_or_create_record_id_handles_empty_registry_and_append(tmp_path):
     )
 
 
+def test_get_or_create_record_id_matches_float_values_after_csv_roundtrip(
+    tmp_path,
+):
+    info_path = tmp_path / "registry.csv"
+    pd.DataFrame(
+        {
+            "threshold": [0.1999999999999999],
+            "parcels": ["/tmp/demo"],
+            "id": [7],
+        }
+    ).to_csv(info_path, index=False)
+
+    record_id = registry_mod.get_or_create_record_id(
+        info_path,
+        {
+            "threshold": 0.19999999999999998,
+            "parcels": Path("/tmp/demo"),
+        },
+        create=False,
+    )
+
+    assert record_id == 7
+
+    record_id = registry_mod.get_or_create_record_id(
+        info_path,
+        {
+            "threshold": 0.19999999999999998,
+            "parcels": Path("/tmp/demo"),
+        },
+        create=True,
+    )
+
+    assert record_id == 7
+    written = pd.read_csv(info_path)
+    assert written.shape[0] == 1
+
+
 def test_append_record_and_get_record_folder(tmp_path):
     info_path = tmp_path / "rows.csv"
 

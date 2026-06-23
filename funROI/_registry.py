@@ -1,11 +1,19 @@
 from pathlib import Path
 from typing import Any, Mapping
 import json
+from numbers import Integral, Real
 
 import pandas as pd
 
 
 def _normalize_record_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Real) and not isinstance(value, Integral):
+        # Canonicalize floating-point noise so values like
+        # 0.19999999999999998 and 0.1999999999999999 resolve to the same
+        # registry key after CSV round-trips.
+        return float(f"{float(value):.15g}")
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Mapping):
@@ -26,7 +34,7 @@ def _normalize_record_value(value: Any) -> Any:
 def _row_matches(row: pd.Series, criteria: Mapping[str, Any]) -> bool:
     for column, expected in criteria.items():
         expected = _normalize_record_value(expected)
-        actual = row[column]
+        actual = _normalize_record_value(row[column])
         if expected is None:
             if not pd.isna(actual):
                 return False
