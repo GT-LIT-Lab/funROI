@@ -200,6 +200,16 @@ class ParcelsGenerator:
         use_spm_smooth: Optional[bool] = True,
         space: Optional[str] = None,
     ) -> "ParcelsGenerator":
+        if space is not None:
+            from .surface_parcels_gen import SurfaceParcelsGenerator
+
+            return SurfaceParcelsGenerator._run_fast(
+                parcels_name=parcels_name,
+                space=space,
+                smoothing_kernel_size=smoothing_kernel_size,
+                overlap_thr_vox=overlap_thr_vox,
+            )
+
         base = cls._get_analysis_parcels_folder(parcels_name)
         config_path = base / f"parcels-{parcels_name}_config.json"
 
@@ -223,12 +233,12 @@ class ParcelsGenerator:
                 if match is not None:
                     inferred_surface_space = match.group(1)
 
-        if space is not None or inferred_surface_space is not None:
+        if inferred_surface_space is not None:
             from .surface_parcels_gen import SurfaceParcelsGenerator
 
             return SurfaceParcelsGenerator._run_fast(
                 parcels_name=parcels_name,
-                space=space if space is not None else inferred_surface_space,
+                space=inferred_surface_space,
                 smoothing_kernel_size=smoothing_kernel_size,
                 overlap_thr_vox=overlap_thr_vox,
             )
