@@ -86,6 +86,46 @@ def test_run_fast_dispatches_to_surface_generator(monkeypatch):
     }
 
 
+def test_run_fast_auto_detects_surface_generator(monkeypatch, tmp_settings):
+    base = tmp_settings / "parcels" / "parcels-P"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "parcels-P_config.json").write_text(
+        json.dumps(
+            {
+                "space": "fsLR32k",
+                "mesh_paths": {"L": "/tmp/L.surf.gii", "R": "/tmp/R.surf.gii"},
+            }
+        )
+    )
+
+    sentinel = object()
+    called = {}
+
+    def fake_surface_run_fast(cls, **kwargs):
+        called["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(
+        surface_parcels_gen_mod.SurfaceParcelsGenerator,
+        "_run_fast",
+        classmethod(fake_surface_run_fast),
+    )
+
+    out = parcels_gen_mod.ParcelsGenerator._run_fast(
+        "P",
+        smoothing_kernel_size=6,
+        overlap_thr_vox=0.25,
+    )
+
+    assert out is sentinel
+    assert called["kwargs"] == {
+        "parcels_name": "P",
+        "space": "fsLR32k",
+        "smoothing_kernel_size": 6,
+        "overlap_thr_vox": 0.25,
+    }
+
+
 def test_add_subjects_sets_shape_affine_and_collects_data(monkeypatch, tmp_settings, tmp_path):
     monkeypatch.setattr(parcels_gen_mod, "FROIConfig", DummyFROIConfig, raising=False)
 

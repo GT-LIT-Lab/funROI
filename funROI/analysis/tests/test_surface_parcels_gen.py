@@ -114,12 +114,22 @@ def test_run_saves_surface_outputs(monkeypatch, tmp_settings):
     ]
 
     overlap_map = np.array([1, 1, 0, 0, 0, 0, 1, 1], dtype=float)
+    smoothed_overlap_map = np.array(
+        [0.9, 0.8, 0.1, 0.0, 0.0, 0.1, 0.8, 0.9],
+        dtype=float,
+    )
     parcels = np.array([1, 1, 0, 0, 0, 0, 2, 2], dtype=int)
 
     monkeypatch.setattr(
         surface_parcels_gen_mod.SurfaceParcelsGenerator,
         "_run",
-        classmethod(lambda cls, *args, **kwargs: (overlap_map, parcels)),
+        classmethod(
+            lambda cls, *args, **kwargs: (
+                overlap_map,
+                smoothed_overlap_map,
+                parcels,
+            )
+        ),
     )
 
     out = gen.run()
@@ -132,6 +142,12 @@ def test_run_saves_surface_outputs(monkeypatch, tmp_settings):
     assert (base / "parcels-surf_config.json").exists()
     assert (base / "parcels-surf_space-fsLR32k_overlap_hemi-L.func.gii").exists()
     assert (base / "parcels-surf_space-fsLR32k_overlap_hemi-R.func.gii").exists()
+    assert (
+        base / "parcels-surf_space-fsLR32k_sm-6_hemi-L_overlap.func.gii"
+    ).exists()
+    assert (
+        base / "parcels-surf_space-fsLR32k_sm-6_hemi-R_overlap.func.gii"
+    ).exists()
 
     info_csv = (
         base / "parcels-surf_space-fsLR32k_sm-6_voxthres-0.25_info.csv"
@@ -148,8 +164,16 @@ def test_run_saves_surface_outputs(monkeypatch, tmp_settings):
         base
         / "parcels-surf_space-fsLR32k_sm-6_voxthres-0.25_roithres-0_sz-0_hemi-R.func.gii"
     )
+    smoothed_left_path = (
+        base / "parcels-surf_space-fsLR32k_sm-6_hemi-L_overlap.func.gii"
+    )
+    smoothed_right_path = (
+        base / "parcels-surf_space-fsLR32k_sm-6_hemi-R_overlap.func.gii"
+    )
     assert np.array_equal(load_surf_data(left_path), np.array([1, 1, 0, 0]))
     assert np.array_equal(load_surf_data(right_path), np.array([0, 0, 2, 2]))
+    assert np.allclose(load_surf_data(smoothed_left_path), np.array([0.9, 0.8, 0.1, 0.0]))
+    assert np.allclose(load_surf_data(smoothed_right_path), np.array([0.0, 0.1, 0.8, 0.9]))
 
 
 def test_filter_removes_small_or_low_overlap_parcels(tmp_settings):
@@ -213,6 +237,7 @@ def test_run_fast_reuses_saved_surface_overlap_map(monkeypatch, tmp_settings):
         classmethod(
             lambda cls, binary_masks, *args, **kwargs: (
                 np.asarray(binary_masks[0]),
+                np.asarray(binary_masks[0], dtype=float),
                 expected_parcels,
             )
         ),
@@ -220,19 +245,26 @@ def test_run_fast_reuses_saved_surface_overlap_map(monkeypatch, tmp_settings):
 
     gen = surface_parcels_gen_mod.SurfaceParcelsGenerator._run_fast(
         "surf",
-        space="fsLR32k",
         smoothing_kernel_size=6,
         overlap_thr_vox=0.25,
     )
 
     assert isinstance(gen, surface_parcels_gen_mod.SurfaceParcelsGenerator)
+    assert gen.space == "fsLR32k"
     assert np.array_equal(
         gen.overlap_map,
         np.array([1, 1, 0, 0, 0, 0, 1, 1], dtype=np.float32),
+    )
+    assert np.array_equal(
+        gen.smoothed_overlap_map,
+        np.array([1, 1, 0, 0, 0, 0, 1, 1], dtype=float),
     )
     assert np.array_equal(gen.parcels, expected_parcels)
     assert list(gen.parcel_info.columns) == ["id", "size"]
     assert (
         base
         / "parcels-surf_space-fsLR32k_sm-6_voxthres-0.25_roithres-0_sz-0_hemi-L.func.gii"
+    ).exists()
+    assert (
+        base / "parcels-surf_space-fsLR32k_sm-6_hemi-L_overlap.func.gii"
     ).exists()

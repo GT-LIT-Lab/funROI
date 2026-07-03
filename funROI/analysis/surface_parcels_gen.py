@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import json
+import re
 import warnings
 
 import numpy as np
@@ -52,6 +53,7 @@ class SurfaceParcelsGenerator:
         self.hemi_sizes = None
         self.hemi_slices = None
         self.overlap_map = None
+        self.smoothed_overlap_map = None
         self.parcels = None
         self.parcel_info = None
 
@@ -128,19 +130,10 @@ class SurfaceParcelsGenerator:
     def _run_fast(
         cls,
         parcels_name: str,
-        space: str = "fsLR32k",
+        space: Optional[str] = None,
         smoothing_kernel_size: Optional[Union[float, List[float]]] = 8,
         overlap_thr_vox: Optional[float] = 0.1,
     ) -> "SurfaceParcelsGenerator":
-        parcel_gen = cls(
-            parcels_name=parcels_name,
-            space=space,
-            smoothing_kernel_size=smoothing_kernel_size,
-            overlap_thr_vox=overlap_thr_vox,
-        )
-        # Run parcel generation with a pre-calculated overlapping map.
-        # Use this method only if you are sure what you are doing.
-
         base = cls._get_analysis_parcels_folder(parcels_name)
         config_path = base / f"parcels-{parcels_name}_config.json"
         if not config_path.exists():
@@ -150,12 +143,39 @@ class SurfaceParcelsGenerator:
             )
         with open(config_path, "r") as f:
             config = json.load(f)
+        config_space = config.get("space")
+        if space is None:
+            space = config_space
 
         mesh_paths = config.get("mesh_paths", {})
         if not all(hemi in mesh_paths for hemi in SURFACE_HEMIS):
             raise ValueError(
                 "Surface parcels config does not include both hemisphere meshes."
             )
+
+        if space is None:
+            overlap_candidates = sorted(
+                base.glob(f"parcels-{parcels_name}_space-*_overlap_hemi-L.func.gii")
+            )
+            if len(overlap_candidates) > 0:
+                match = re.search(
+                    r"_space-([^_]+)_overlap_hemi-L\.func\.gii$",
+                    overlap_candidates[0].name,
+                )
+                if match is not None:
+                    space = match.group(1)
+        if space is None:
+            space = "fsLR32k"
+
+        parcel_gen = cls(
+            parcels_name=parcels_name,
+            space=space,
+            smoothing_kernel_size=smoothing_kernel_size,
+            overlap_thr_vox=overlap_thr_vox,
+        )
+        # Run parcel generation with a pre-calculated overlapping map.
+        # Use this method only if you are sure what you are doing.
+
         parcel_gen.mesh_paths = {
             hemi: Path(mesh_paths[hemi]) for hemi in SURFACE_HEMIS
         }
@@ -212,10 +232,33 @@ class SurfaceParcelsGenerator:
             for hemi in SURFACE_HEMIS
         }
         if not all(path.exists() for path in overlap_paths.values()):
-            raise FileNotFoundError(
-                "Overlapping map not found. Please double-check the parcels "
-                "name and configurations."
+            alt_overlap_candidates = sorted(
+                base.glob(f"parcels-{parcels_name}_space-*_overlap_hemi-L.func.gii")
             )
+            if len(alt_overlap_candidates) > 0:
+                match = re.search(
+                    r"_space-([^_]+)_overlap_hemi-L\.func\.gii$",
+                    alt_overlap_candidates[0].name,
+                )
+                if match is not None:
+                    alt_space = match.group(1)
+                    alt_overlap_paths = {
+                        hemi: (
+                            base
+                            / f"parcels-{parcels_name}_space-{alt_space}_overlap_hemi-{hemi}.func.gii"
+                        )
+                        for hemi in SURFACE_HEMIS
+                    }
+                    if all(path.exists() for path in alt_overlap_paths.values()):
+                        parcel_gen.space = alt_space
+                        overlap_paths = alt_overlap_paths
+            if not all(path.exists() for path in overlap_paths.values()):
+                available = sorted(path.name for path in base.glob("*overlap*"))
+                raise FileNotFoundError(
+                    "Overlapping map not found. Expected surface overlap files "
+                    f"for parcels '{parcels_name}' in space '{parcel_gen.space}' "
+                    f"under {base}. Available overlap-like files: {available}"
+                )
 
         parcel_gen.overlap_map = np.concatenate(
             [
@@ -223,7 +266,7 @@ class SurfaceParcelsGenerator:
                 load_surface_numeric_data(overlap_paths["R"]).reshape(-1),
             ]
         )
-        _, parcel_gen.parcels = cls._run(
+        _, parcel_gen.smoothed_overlap_map, parcel_gen.parcels = cls._run(
             [parcel_gen.overlap_map],
             parcel_gen.mesh,
             parcel_gen.hemi_slices,
@@ -250,7 +293,11 @@ class SurfaceParcelsGenerator:
 
         if self.parcel_info is None:
             binary_masks = [np.mean(dat, axis=0) > 0.5 for dat in self._data]
-            self.overlap_map, self.parcels = self._run(
+            (
+                self.overlap_map,
+                self.smoothed_overlap_map,
+                self.parcels,
+            ) = self._run(
                 binary_masks,
                 self.mesh,
                 self.hemi_slices,
@@ -467,7 +514,7 @@ class SurfaceParcelsGenerator:
         hemi_slices: Dict[str, slice],
         smoothing_kernel_size: Union[float, List[float]],
         overlap_thr_vox: float,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         overlap_map = np.mean(binary_masks, axis=0)
         smoothed_map = overlap_map.copy().astype(float)
 
@@ -487,6 +534,7 @@ class SurfaceParcelsGenerator:
                 fwhm,
             )
 
+        smoothed_overlap_map = smoothed_map.copy()
         smoothed_map[smoothed_map < overlap_thr_vox] = np.nan
 
         parcels = np.zeros_like(overlap_map, dtype=int)
@@ -502,7 +550,7 @@ class SurfaceParcelsGenerator:
             hemi_labels[nonzero] += label_offset
             parcels[hemi_slice] = hemi_labels
             label_offset = int(np.max(parcels))
-        return overlap_map, parcels
+        return overlap_map, smoothed_overlap_map, parcels
 
     @classmethod
     def _watershed_surface(cls, values: np.ndarray, mesh) -> np.ndarray:
@@ -628,6 +676,22 @@ class SurfaceParcelsGenerator:
                 self._to_surface_image(self.overlap_map),
                 {
                     hemi: base / f"{overlap_stem}_hemi-{hemi}.func.gii"
+                    for hemi in SURFACE_HEMIS
+                },
+            )
+
+        if self.smoothed_overlap_map is not None:
+            smoothed_overlap_stem = (
+                f"parcels-{self.parcels_name}_space-{self.space}"
+                f"_sm-{self.smoothing_kernel_size}"
+            )
+            save_surface_image(
+                self._to_surface_image(self.smoothed_overlap_map),
+                {
+                    hemi: (
+                        base
+                        / f"{smoothed_overlap_stem}_hemi-{hemi}_overlap.func.gii"
+                    )
                     for hemi in SURFACE_HEMIS
                 },
             )
